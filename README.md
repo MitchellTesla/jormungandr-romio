@@ -1,4 +1,4 @@
-#  Full-Node ~ Jörmungandr   Experimental 
+#  Full-Node ~ Jörmungandr   Æxperimental 
 Do NOT use!.....this is an experimental fork and build-test (WIP)  
 
 Jörmungandr is an aspiring node implementation, written in rust, with the initial aim to support the Ouroboros type of consensus protocol.
