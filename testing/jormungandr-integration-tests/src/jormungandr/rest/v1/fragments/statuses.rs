@@ -1,14 +1,17 @@
+use crate::startup;
 use chain_impl_mockchain::{block::BlockDate, fragment::FragmentId};
-use jormungandr_testing_utils::testing::jormungandr::JormungandrProcess;
-use jormungandr_testing_utils::testing::{jormungandr::ConfigurationBuilder, startup};
-use jormungandr_testing_utils::testing::{FragmentSenderSetup, MemPoolCheck};
+use jormungandr_automation::jormungandr::ConfigurationBuilder;
+use jormungandr_automation::jormungandr::JormungandrProcess;
+use jormungandr_automation::jormungandr::MemPoolCheck;
 use rstest::*;
+use thor::FragmentSender;
+use thor::FragmentSenderSetup;
 
 #[fixture]
 fn world() -> (JormungandrProcess, FragmentId, FragmentId, FragmentId) {
-    let mut alice = startup::create_new_account_address();
-    let mut bob = startup::create_new_account_address();
-    let mut clarice = startup::create_new_account_address();
+    let alice = thor::Wallet::default();
+    let bob = thor::Wallet::default();
+    let mut clarice = thor::Wallet::default();
 
     let (jormungandr, _stake_pools) = startup::start_stake_pool(
         &[alice.clone()],
@@ -17,26 +20,20 @@ fn world() -> (JormungandrProcess, FragmentId, FragmentId, FragmentId) {
     )
     .unwrap();
 
-    let transaction_sender = jormungandr.fragment_sender(FragmentSenderSetup::resend_3_times());
+    let transaction_sender = FragmentSender::from(jormungandr.block0_configuration());
 
-    let alice_fragment = alice
-        .transaction_to(
-            &jormungandr.genesis_block_hash(),
-            &jormungandr.fees(),
-            BlockDate::first().next_epoch(),
-            bob.address(),
-            100.into(),
-        )
+    let fragment_builder = thor::FragmentBuilder::new(
+        &jormungandr.genesis_block_hash(),
+        &jormungandr.fees(),
+        BlockDate::first().next_epoch(),
+    );
+
+    let alice_fragment = fragment_builder
+        .transaction(&alice, bob.address(), 100.into())
         .unwrap();
 
-    let bob_fragment = bob
-        .transaction_to(
-            &jormungandr.genesis_block_hash(),
-            &jormungandr.fees(),
-            BlockDate::first().next_epoch(),
-            alice.address(),
-            100.into(),
-        )
+    let bob_fragment = fragment_builder
+        .transaction(&bob, alice.address(), 100.into())
         .unwrap();
 
     let clarice_tx = transaction_sender

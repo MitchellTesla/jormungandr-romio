@@ -1,4 +1,4 @@
-use jormungandr_testing_utils::testing::{jcli::JCli, startup::create_new_key_pair};
+use jormungandr_automation::{jcli::JCli, testing::keys::create_new_key_pair};
 
 use chain_crypto::{Ed25519, RistrettoGroup2HashDh, SumEd25519_12};
 
@@ -76,6 +76,7 @@ proposals:
       treasury:
         transfer_to_rewards:
           value: 100
+voting_token: "00000000000000000000000000000000000000000000000000000000.00000000"
     "#;
 
     let vote_plan_config_path = temp_dir.child("vote_plan.yaml");

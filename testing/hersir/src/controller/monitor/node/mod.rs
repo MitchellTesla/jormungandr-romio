@@ -4,33 +4,25 @@ mod legacy;
 
 pub use legacy::LegacyNode;
 
+use crate::style;
 use chain_core::property::Fragment as _;
 use chain_impl_mockchain::fragment::{Fragment, FragmentId};
-use jormungandr_lib::interfaces::{BlockDate, FragmentLog, FragmentsProcessingSummary};
-use jormungandr_testing_utils::testing::{FragmentNode, FragmentNodeError};
-use std::collections::HashMap;
-
-use crate::style;
+use jormungandr_automation::jormungandr::Explorer;
+use jormungandr_automation::jormungandr::LogLevel;
+use jormungandr_automation::jormungandr::NodeAlias;
+pub use jormungandr_automation::jormungandr::{
+    grpc::{client::MockClientError, JormungandrClient},
+    uri_from_socket_addr, FragmentNode, FragmentNodeError, JormungandrLogger, JormungandrRest,
+    MemPoolCheck, RestError,
+};
+use jormungandr_automation::jormungandr::{
+    JormungandrProcess, ShutdownError, StartupError, StartupVerificationMode, Status,
+};
+use jormungandr_automation::testing::SyncNode;
 use jormungandr_lib::interfaces::NodeState;
+use jormungandr_lib::interfaces::{BlockDate, FragmentLog, FragmentsProcessingSummary};
 use jormungandr_lib::{crypto::hash::Hash, multiaddr};
-use jormungandr_testing_utils::testing::jormungandr::ShutdownError;
-use jormungandr_testing_utils::testing::jormungandr::{
-    JormungandrProcess, StartupError, StartupVerificationMode, Status,
-};
-use jormungandr_testing_utils::testing::node::Explorer;
-use jormungandr_testing_utils::testing::node::LogLevel;
-use jormungandr_testing_utils::testing::SyncNode;
-pub use jormungandr_testing_utils::testing::{
-    network::{
-        FaketimeConfig, LeadershipMode, NodeAlias, NodeBlock0, NodeSetting, PersistenceMode,
-        Settings,
-    },
-    node::{
-        grpc::{client::MockClientError, JormungandrClient},
-        uri_from_socket_addr, JormungandrLogger, JormungandrRest, RestError,
-    },
-    MemPoolCheck, NamedProcess,
-};
+use std::collections::HashMap;
 
 use indicatif::ProgressBar;
 use std::net::SocketAddr;
@@ -232,16 +224,6 @@ impl Node {
                 self.progress_bar.log_info("shutdown successfully.");
                 exit_status
             })
-    }
-
-    fn ports_are_opened(&self) -> bool {
-        self.port_opened(self.process.rest_address().port())
-            && self.port_opened(self.process.p2p_listen_addr().port())
-    }
-
-    fn port_opened(&self, port: u16) -> bool {
-        use std::net::TcpListener;
-        TcpListener::bind(("127.0.0.1", port)).is_ok()
     }
 
     pub fn is_up(&self) -> bool {

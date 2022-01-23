@@ -9,9 +9,11 @@ use chain_crypto::{
 use chain_impl_mockchain::{
     account::{AccountAlg, Identifier},
     fragment::FragmentId,
+    transaction::UnspecifiedAccountIdentifier,
     value::ValueError,
 };
 use futures::{channel::mpsc::SendError, channel::mpsc::TrySendError, prelude::*};
+use hex::ToHex;
 use jormungandr_lib::interfaces::{
     AccountVotes, FragmentLog, FragmentOrigin, FragmentStatus, FragmentsBatch,
     FragmentsProcessingSummary, VotePlanId,
@@ -132,10 +134,7 @@ pub async fn get_account_votes_with_plan(
 ) -> Result<Option<Vec<u8>>, Error> {
     let span = span!(parent: context.span()?, Level::TRACE, "get_account_votes_with_plan", request = "get_account_votes_with_plan");
 
-    let identifier =
-        chain_impl_mockchain::transaction::UnspecifiedAccountIdentifier::from_single_account(
-            parse_account_id(&account_id_hex)?,
-        );
+    let identifier = parse_account_id(&account_id_hex)?;
 
     async move {
         let maybe_vote_plan = context
@@ -169,10 +168,7 @@ pub async fn get_account_votes(
 ) -> Result<Option<Vec<AccountVotes>>, Error> {
     let span = span!(parent: context.span()?, Level::TRACE, "get_account_votes", request = "get_account_votes");
 
-    let identifier =
-        chain_impl_mockchain::transaction::UnspecifiedAccountIdentifier::from_single_account(
-            parse_account_id(&account_id_hex)?,
-        );
+    let identifier = parse_account_id(&account_id_hex)?;
 
     async {
         let result = context
@@ -199,6 +195,37 @@ pub async fn get_account_votes(
             .collect();
 
         Ok(Some(result))
+    }
+    .instrument(span)
+    .await
+}
+
+pub async fn get_accounts_votes_count(context: &Context) -> Result<HashMap<String, u64>, Error> {
+    let span = span!(parent: context.span()?, Level::TRACE, "get_accounts_votes", request = "get_accounts_votes");
+
+    async {
+        let mut result = HashMap::new();
+        for vote_plan in context
+            .blockchain_tip()?
+            .get_ref()
+            .await
+            .ledger()
+            .active_vote_plans()
+            .into_iter()
+        {
+            for status in vote_plan.proposals.into_iter() {
+                for (account, _) in status.votes.iter() {
+                    *result
+                        .entry(
+                            UnspecifiedAccountIdentifier::from_single_account(account.clone())
+                                .encode_hex(),
+                        )
+                        .or_insert(0) += 1;
+                }
+            }
+        }
+
+        Ok(result)
     }
     .instrument(span)
     .await

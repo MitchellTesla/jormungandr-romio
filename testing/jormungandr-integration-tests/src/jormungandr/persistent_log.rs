@@ -1,19 +1,18 @@
+use crate::startup;
 use assert_fs::fixture::PathChild;
 use assert_fs::TempDir;
 use chain_impl_mockchain::block::BlockDate;
+use jormungandr_automation::jcli::JCli;
+use jormungandr_automation::jormungandr::ConfigurationBuilder;
 use jormungandr_lib::interfaces::{Mempool, PersistentLog};
-use jormungandr_testing_utils::testing::fragments::PersistentLogViewer;
-use jormungandr_testing_utils::testing::jcli::JCli;
-use jormungandr_testing_utils::testing::jormungandr::ConfigurationBuilder;
-use jormungandr_testing_utils::testing::startup;
-use jormungandr_testing_utils::testing::transaction_utils::TransactionHash;
 pub use jortestkit::console::progress_bar::{parse_progress_bar_mode_from_str, ProgressBarMode};
+use thor::{PersistentLogViewer, TransactionHash};
 
 #[test]
 /// Verifies that no log entries are created for fragments that are already expired when received.
 fn rejected_fragments_have_no_log() {
-    let receiver = startup::create_new_account_address();
-    let mut sender = startup::create_new_account_address();
+    let receiver = thor::Wallet::default();
+    let sender = thor::Wallet::default();
 
     let log_path = TempDir::new().unwrap().child("log_path");
 
@@ -32,17 +31,23 @@ fn rejected_fragments_have_no_log() {
 
     let jcli = JCli::default();
 
+    let correct_fragment_builder = thor::FragmentBuilder::new(
+        &jormungandr.genesis_block_hash(),
+        &jormungandr.fees(),
+        BlockDate::first().next_epoch(),
+    );
+
+    let faulty_fragment_builder = thor::FragmentBuilder::new(
+        &jormungandr.genesis_block_hash(),
+        &jormungandr.fees(),
+        BlockDate::first(),
+    );
+
     // Should be rejected without a log entry
     jcli.fragment_sender(&jormungandr)
         .send(
-            &sender
-                .transaction_to(
-                    &jormungandr.genesis_block_hash(),
-                    &jormungandr.fees(),
-                    BlockDate::first(),
-                    receiver.address(),
-                    100.into(),
-                )
+            &faulty_fragment_builder
+                .transaction(&sender, receiver.address(), 100.into())
                 .unwrap()
                 .encode(),
         )
@@ -51,14 +56,8 @@ fn rejected_fragments_have_no_log() {
     // Should be accepted with a log entry
     jcli.fragment_sender(&jormungandr)
         .send(
-            &sender
-                .transaction_to(
-                    &jormungandr.genesis_block_hash(),
-                    &jormungandr.fees(),
-                    BlockDate::first().next_epoch(),
-                    receiver.address(),
-                    101.into(),
-                )
+            &correct_fragment_builder
+                .transaction(&sender, receiver.address(), 101.into())
                 .unwrap()
                 .encode(),
         )
@@ -67,14 +66,8 @@ fn rejected_fragments_have_no_log() {
     // Should be rejected without a log entry
     jcli.fragment_sender(&jormungandr)
         .send(
-            &sender
-                .transaction_to(
-                    &jormungandr.genesis_block_hash(),
-                    &jormungandr.fees(),
-                    BlockDate::first(),
-                    receiver.address(),
-                    102.into(),
-                )
+            &faulty_fragment_builder
+                .transaction(&sender, receiver.address(), 102.into())
                 .unwrap()
                 .encode(),
         )

@@ -14,26 +14,18 @@ use chain_impl_mockchain::{
     testing::decrypt_tally,
     value::Value,
 };
+use jormungandr_automation::jormungandr::{ConfigurationBuilder, Starter};
+use jormungandr_automation::testing::time::{wait_for_date, wait_for_epoch};
+use jormungandr_automation::testing::{benchmark_consumption, VotePlanBuilder};
 use jormungandr_lib::interfaces::BlockDate as BlockDateLib;
-use jormungandr_testing_utils::testing::fragments::AdversaryFragmentGenerator;
-use jormungandr_testing_utils::testing::jormungandr::{ConfigurationBuilder, Starter};
-use jormungandr_testing_utils::testing::AdversaryFragmentSender;
-use jormungandr_testing_utils::testing::AdversaryFragmentSenderSetup;
-use jormungandr_testing_utils::testing::BlockDateGenerator;
-use jormungandr_testing_utils::testing::VoteCastsGenerator;
-use jormungandr_testing_utils::testing::{
-    benchmark_consumption, FragmentStatusProvider, VotePlanBuilder,
-};
-use jormungandr_testing_utils::{
-    testing::{
-        node::time::{wait_for_date, wait_for_epoch},
-        vote_plan_cert, FragmentSender, FragmentSenderSetup,
-    },
-    wallet::Wallet,
-};
 use jortestkit::load::Configuration;
 use jortestkit::measurement::Status;
+use loki::AdversaryFragmentSender;
+use loki::AdversaryFragmentSenderSetup;
+use mjolnir::generators::{AdversaryFragmentGenerator, FragmentStatusProvider, VoteCastsGenerator};
 use rand::rngs::OsRng;
+use thor::BlockDateGenerator;
+use thor::{vote_plan_cert, FragmentSender, FragmentSenderSetup, Wallet};
 
 const CRS_SEED: &[u8] = "Testing seed".as_bytes();
 
@@ -67,15 +59,15 @@ pub fn private_vote_load_scenario(quick_config: PrivateVotingLoadTestConfig) {
                 value: Value(quick_config.rewards_increase()),
             },
         })
-        .with_vote_start(BlockDate::from_epoch_slot_id(
+        .vote_start(BlockDate::from_epoch_slot_id(
             quick_config.voting_timing()[0],
             0,
         ))
-        .with_tally_start(BlockDate::from_epoch_slot_id(
+        .tally_start(BlockDate::from_epoch_slot_id(
             quick_config.voting_timing()[1],
             0,
         ))
-        .with_tally_end(BlockDate::from_epoch_slot_id(
+        .tally_end(BlockDate::from_epoch_slot_id(
             quick_config.voting_timing()[2],
             0,
         ))
@@ -101,7 +93,7 @@ pub fn private_vote_load_scenario(quick_config: PrivateVotingLoadTestConfig) {
                 .map(|x| x.to_initial_fund(quick_config.initial_fund_per_wallet()))
                 .collect(),
         )
-        .with_committees(&[&committee])
+        .with_committees(&[committee.to_committee_id()])
         .with_slots_per_epoch(quick_config.slots_in_epoch())
         .with_certs(vec![vote_plan_cert])
         .with_slot_duration(quick_config.slot_duration())
@@ -249,15 +241,15 @@ pub fn adversary_private_vote_load_scenario(
                 value: Value(quick_config.rewards_increase()),
             },
         })
-        .with_vote_start(BlockDate::from_epoch_slot_id(
+        .vote_start(BlockDate::from_epoch_slot_id(
             quick_config.voting_timing()[0],
             0,
         ))
-        .with_tally_start(BlockDate::from_epoch_slot_id(
+        .tally_start(BlockDate::from_epoch_slot_id(
             quick_config.voting_timing()[1],
             0,
         ))
-        .with_tally_end(BlockDate::from_epoch_slot_id(
+        .tally_end(BlockDate::from_epoch_slot_id(
             quick_config.voting_timing()[2],
             0,
         ))
@@ -286,7 +278,7 @@ pub fn adversary_private_vote_load_scenario(
                 .map(|x| x.to_initial_fund(quick_config.initial_fund_per_wallet()))
                 .collect(),
         )
-        .with_committees(&[&committee])
+        .with_committees(&[committee.to_committee_id()])
         .with_slots_per_epoch(quick_config.slots_in_epoch())
         .with_certs(vec![vote_plan_cert])
         .with_slot_duration(quick_config.slot_duration())

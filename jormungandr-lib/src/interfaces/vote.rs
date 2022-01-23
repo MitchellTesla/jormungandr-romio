@@ -1,6 +1,6 @@
 use crate::{
     crypto::hash::Hash,
-    interfaces::{blockdate::BlockDate, stake::Stake, value::ValueDef},
+    interfaces::{blockdate::BlockDate, mint_token::TokenIdentifier, value::ValueDef},
 };
 use chain_impl_mockchain::{
     certificate::{self, ExternalProposalId, Proposal, Proposals, VoteAction},
@@ -158,6 +158,7 @@ pub struct VotePlan {
     proposals: Proposals,
     #[serde(with = "serde_committee_member_public_keys", default = "Vec::new")]
     pub committee_member_public_keys: Vec<chain_vote::MemberPublicKey>,
+    voting_token: TokenIdentifier,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -214,6 +215,7 @@ impl From<certificate::VotePlan> for VotePlan {
             proposals: vp.proposals().clone(),
             payload_type: vp.payload_type().into(),
             committee_member_public_keys: vp.committee_public_keys().to_vec(),
+            voting_token: vp.voting_token().clone().into(),
         }
     }
 }
@@ -227,6 +229,7 @@ impl From<VotePlan> for certificate::VotePlan {
             vpd.proposals,
             vpd.payload_type.into(),
             vpd.committee_member_public_keys,
+            vpd.voting_token.into(),
         )
     }
 }
@@ -446,6 +449,7 @@ pub struct VotePlanStatus {
     #[serde(with = "serde_committee_member_public_keys")]
     pub committee_member_keys: Vec<MemberPublicKey>,
     pub proposals: Vec<VoteProposalStatus>,
+    pub voting_token: TokenIdentifier,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -551,7 +555,7 @@ impl From<EncryptedTally> for chain_vote::EncryptedTally {
 pub enum PrivateTallyState {
     Encrypted {
         encrypted_tally: EncryptedTally,
-        total_stake: Stake,
+        total_stake: crate::interfaces::Value,
     },
     Decrypted {
         result: TallyResult,
@@ -723,6 +727,7 @@ impl From<vote::VotePlanStatus> for VotePlanStatus {
             payload: this.payload,
             committee_member_keys: this.committee_public_keys,
             proposals: this.proposals.into_iter().map(|p| p.into()).collect(),
+            voting_token: this.voting_token.into(),
         }
     }
 }
@@ -741,6 +746,7 @@ impl From<VotePlanStatus> for vote::VotePlanStatus {
                 .into_iter()
                 .map(|p| p.into())
                 .collect(),
+            voting_token: vote_plan_status.voting_token.into(),
         }
     }
 }
@@ -751,6 +757,7 @@ mod test {
     use crate::interfaces::vote::{serde_committee_member_public_keys, SerdeMemberPublicKey};
     use chain_impl_mockchain::block::BlockDate;
     use chain_impl_mockchain::certificate;
+    use chain_impl_mockchain::tokens::identifier;
     use rand_chacha::rand_core::SeedableRng;
 
     #[test]
@@ -790,6 +797,10 @@ mod test {
         let prop = Proposal::new(id, Options::new_length(1).unwrap(), VoteAction::OffChain);
         let mut proposals = Proposals::new();
         let _ = proposals.push(prop);
+        let voting_token = identifier::TokenIdentifier::from_str(
+            "00000000000000000000000000000000000000000000000000000000.00000000",
+        )
+        .unwrap();
         let vote_plan: VotePlan = certificate::VotePlan::new(
             start,
             end,
@@ -797,6 +808,7 @@ mod test {
             proposals,
             vote::PayloadType::Private,
             vec![member_key],
+            voting_token,
         )
         .into();
 

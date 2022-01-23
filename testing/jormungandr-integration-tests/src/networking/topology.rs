@@ -1,13 +1,13 @@
 use crate::networking::utils;
-use jormungandr_testing_utils::testing::network::builder::NetworkBuilder;
-use jormungandr_testing_utils::testing::network::wallet::template::builder::WalletTemplateBuilder;
-use jormungandr_testing_utils::testing::network::Node;
-use jormungandr_testing_utils::testing::network::SpawnParams;
-use jormungandr_testing_utils::testing::network::Topology;
-use jormungandr_testing_utils::testing::sync::MeasurementReportInterval;
-use jormungandr_testing_utils::testing::FragmentSender;
-use jormungandr_testing_utils::testing::FragmentSenderSetup;
-use jormungandr_testing_utils::testing::SyncWaitParams;
+use hersir::builder::wallet::template::builder::WalletTemplateBuilder;
+use hersir::builder::NetworkBuilder;
+use hersir::builder::Node;
+use hersir::builder::SpawnParams;
+use hersir::builder::Topology;
+use jormungandr_automation::testing::benchmark::MeasurementReportInterval;
+use jormungandr_automation::testing::SyncWaitParams;
+use thor::FragmentSender;
+use thor::FragmentSenderSetup;
 
 const LEADER_1: &str = "Leader1";
 const LEADER_2: &str = "Leader2";
@@ -23,8 +23,6 @@ const RELAY_NODE_2: &str = "Relay2";
 
 const ALICE: &str = "ALICE";
 const BOB: &str = "BOB";
-
-use function_name::named;
 
 #[test]
 pub fn fully_connected() {
@@ -73,7 +71,7 @@ pub fn fully_connected() {
     let mut wallet1 = controller.wallet(ALICE).unwrap();
     let mut wallet2 = controller.wallet(BOB).unwrap();
 
-    let fragment_sender = FragmentSender::from(&controller);
+    let fragment_sender = FragmentSender::from(&controller.settings().block0);
 
     fragment_sender
         .send_transactions_round_trip(10, &mut wallet1, &mut wallet2, &leader1, 1_000.into())
@@ -144,7 +142,7 @@ pub fn star() {
     let mut wallet1 = controller.wallet(ALICE).unwrap();
     let mut wallet2 = controller.wallet(BOB).unwrap();
 
-    FragmentSender::from(controller.settings())
+    FragmentSender::from(&controller.settings().block0)
         .send_transactions_round_trip(40, &mut wallet1, &mut wallet2, &leader1, 1_000.into())
         .unwrap();
 
@@ -169,7 +167,6 @@ pub fn star() {
 }
 
 #[test]
-#[named]
 pub fn mesh() {
     let mut controller = NetworkBuilder::default()
         .topology(
@@ -225,7 +222,7 @@ pub fn mesh() {
     let mut wallet1 = controller.wallet(ALICE).unwrap();
     let mut wallet2 = controller.wallet(BOB).unwrap();
 
-    FragmentSender::from(controller.settings())
+    FragmentSender::from(&controller.settings().block0)
         .send_transactions_round_trip(4, &mut wallet1, &mut wallet2, &leader1, 1_000.into())
         .unwrap();
 
@@ -251,7 +248,6 @@ pub fn mesh() {
 }
 
 #[test]
-#[named]
 pub fn point_to_point() {
     let mut controller = NetworkBuilder::default()
         .topology(
@@ -291,8 +287,8 @@ pub fn point_to_point() {
     let mut wallet1 = controller.wallet(ALICE).unwrap();
     let mut wallet2 = controller.wallet(BOB).unwrap();
 
-    FragmentSender::from(controller.settings())
-        .send_transactions_round_trip(40, &mut wallet1, &mut wallet2, &leader1, 1_000.into())
+    FragmentSender::from(&controller.settings().block0)
+        .send_transactions_round_trip(5, &mut wallet1, &mut wallet2, &leader1, 1_000.into())
         .unwrap();
 
     let leaders = [&leader1, &leader2, &leader3, &leader4];
@@ -317,7 +313,6 @@ pub fn point_to_point() {
 }
 
 #[test]
-#[named]
 pub fn point_to_point_on_file_storage() {
     let mut controller = NetworkBuilder::default()
         .topology(
@@ -349,7 +344,7 @@ pub fn point_to_point_on_file_storage() {
     let mut wallet1 = controller.wallet(ALICE).unwrap();
     let mut wallet2 = controller.wallet(BOB).unwrap();
 
-    FragmentSender::from(controller.settings())
+    FragmentSender::from(&controller.settings().block0)
         .send_transactions_round_trip(40, &mut wallet1, &mut wallet2, &leader1, 1_000.into())
         .unwrap();
 
@@ -375,7 +370,6 @@ pub fn point_to_point_on_file_storage() {
 }
 
 #[test]
-#[named]
 pub fn tree() {
     let mut controller = NetworkBuilder::default()
         .topology(
@@ -427,7 +421,7 @@ pub fn tree() {
     let mut wallet1 = controller.wallet(ALICE).unwrap();
     let mut wallet2 = controller.wallet(BOB).unwrap();
 
-    FragmentSender::from(controller.settings())
+    FragmentSender::from(&controller.settings().block0)
         .send_transactions_round_trip(40, &mut wallet1, &mut wallet2, &leader1, 1_000.into())
         .unwrap();
 
@@ -455,7 +449,6 @@ pub fn tree() {
 }
 
 #[test]
-#[named]
 pub fn relay() {
     let mut controller = NetworkBuilder::default()
         .topology(
@@ -523,9 +516,9 @@ pub fn relay() {
 
     let setup = FragmentSenderSetup::resend_3_times_and_sync_with(vec![&core, &relay1, &relay2]);
 
-    FragmentSender::from(controller.settings())
+    FragmentSender::from(&controller.settings().block0)
         .clone_with_setup(setup)
-        .send_transactions_round_trip(40, &mut wallet1, &mut wallet2, &leader1, 1_000.into())
+        .send_transactions_round_trip(5, &mut wallet1, &mut wallet2, &leader1, 1_000.into())
         .unwrap();
 
     let leaders = [

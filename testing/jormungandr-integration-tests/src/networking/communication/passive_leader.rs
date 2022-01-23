@@ -1,16 +1,15 @@
-use jormungandr_lib::interfaces::Policy;
-use jormungandr_testing_utils::testing::network::{
-    builder::NetworkBuilder, wallet::template::builder::WalletTemplateBuilder,
-};
-use jormungandr_testing_utils::testing::network::{Node, SpawnParams, Topology};
-use jormungandr_testing_utils::testing::sync::{
+use crate::networking::utils::wait;
+use hersir::builder::{wallet::template::builder::WalletTemplateBuilder, NetworkBuilder};
+use hersir::builder::{Node, SpawnParams, Topology};
+use jormungandr_automation::jormungandr::{LogLevel, MemPoolCheck};
+use jormungandr_automation::testing::benchmark::{
     measure_and_log_sync_time, MeasurementReportInterval,
 };
-use jormungandr_testing_utils::testing::FragmentSender;
-use jormungandr_testing_utils::testing::FragmentSenderSetup;
-use jormungandr_testing_utils::testing::MemPoolCheck;
-use jormungandr_testing_utils::testing::SyncWaitParams;
+use jormungandr_automation::testing::SyncWaitParams;
+use jormungandr_lib::interfaces::Policy;
 use std::time::Duration;
+use thor::FragmentSender;
+use thor::FragmentSenderSetup;
 
 const PASSIVE: &str = "PASSIVE";
 const LEADER: &str = "LEADER";
@@ -48,8 +47,7 @@ pub fn two_nodes_communication() {
     let mut alice = network_controller.wallet(ALICE).unwrap();
     let mut bob = network_controller.wallet(BOB).unwrap();
 
-    passive
-        .fragment_sender(Default::default())
+    FragmentSender::from(&network_controller.settings().block0)
         .send_transactions_round_trip(5, &mut alice, &mut bob, &passive, 100.into())
         .expect("fragment send error");
 
@@ -96,7 +94,7 @@ pub fn transaction_to_passive() {
     let mut alice = controller.wallet(ALICE).unwrap();
     let mut bob = controller.wallet(BOB).unwrap();
 
-    FragmentSender::from(controller.settings())
+    FragmentSender::from(&controller.settings().block0)
         .send_transactions_round_trip(10, &mut alice, &mut bob, &passive, 1_000.into())
         .unwrap();
 
@@ -139,8 +137,10 @@ pub fn leader_restart() {
         .unwrap()
         .into_persistent();
 
+    let qurantine_duration = 5;
+
     let policy = Policy {
-        quarantine_duration: Some(Duration::new(5, 0).into()),
+        quarantine_duration: Some(Duration::new(qurantine_duration, 0).into()),
         quarantine_whitelist: None,
     };
 
@@ -166,19 +166,19 @@ pub fn leader_restart() {
     let mut alice = controller.wallet(ALICE).unwrap();
     let mut bob = controller.wallet(BOB).unwrap();
 
-    FragmentSender::from(controller.settings())
+    FragmentSender::from(&controller.settings().block0)
         .clone_with_setup(FragmentSenderSetup::resend_3_times())
-        .send_transactions_round_trip(10, &mut alice, &mut bob, &passive, 1_000.into())
+        .send_transactions_round_trip(2, &mut alice, &mut bob, &passive, 1_000.into())
         .unwrap();
 
     leader.shutdown();
     leader
         .wait_for_shutdown(std::time::Duration::from_secs(10))
         .unwrap();
-    FragmentSender::from(controller.settings())
+    FragmentSender::from(&controller.settings().block0)
         .clone_with_setup(FragmentSenderSetup::resend_3_times())
         .send_transactions_with_iteration_delay(
-            10,
+            4,
             &mut alice,
             &mut bob,
             &passive,
@@ -186,12 +186,22 @@ pub fn leader_restart() {
             Duration::from_secs(3),
         )
         .unwrap();
+
+    wait(qurantine_duration * 2);
+
+    assert!(leader.ports_are_opened());
     let leader = controller
-        .spawn(SpawnParams::new(LEADER).verbose(true))
+        .spawn(
+            SpawnParams::new(LEADER)
+                .verbose(true)
+                .in_memory()
+                .log_level(LogLevel::TRACE),
+        )
         .unwrap();
-    FragmentSender::from(controller.settings())
+
+    FragmentSender::from(&controller.settings().block0)
         .clone_with_setup(FragmentSenderSetup::resend_3_times())
-        .send_transactions_round_trip(10, &mut alice, &mut bob, &passive, 1_000.into())
+        .send_transactions_round_trip(2, &mut alice, &mut bob, &passive, 1_000.into())
         .unwrap();
 
     measure_and_log_sync_time(
@@ -232,7 +242,7 @@ pub fn passive_node_is_updated() {
     let mut alice = controller.wallet(ALICE).unwrap();
     let mut bob = controller.wallet(BOB).unwrap();
 
-    FragmentSender::from(controller.settings())
+    FragmentSender::from(&controller.settings().block0)
         .send_transactions_round_trip(40, &mut alice, &mut bob, &leader, 1_000.into())
         .unwrap();
 

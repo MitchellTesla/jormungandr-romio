@@ -1,13 +1,12 @@
 use assert_fs::TempDir;
 use chain_core::property::BlockDate;
 use chain_impl_mockchain::vote::Choice;
-use jormungandr_testing_utils::testing::{
-    jcli::JCli, jormungandr::starter::Starter, jormungandr::ConfigurationBuilder,
+use jormungandr_automation::{
+    jcli::JCli,
+    jormungandr::{ConfigurationBuilder, Starter},
+    testing::VotePlanBuilder,
 };
-use jormungandr_testing_utils::{
-    testing::{vote_plan_cert, FragmentSender, FragmentSenderSetup, VotePlanBuilder},
-    wallet::Wallet,
-};
+use thor::{vote_plan_cert, FragmentSender, FragmentSenderSetup, Wallet};
 
 #[test]
 pub fn test_correct_proposal_number_is_returned() {
@@ -16,9 +15,9 @@ pub fn test_correct_proposal_number_is_returned() {
 
     let vote_plan = VotePlanBuilder::new()
         .proposals_count(3)
-        .with_vote_start(BlockDate::from_epoch_slot_id(0, 0))
-        .with_tally_start(BlockDate::from_epoch_slot_id(1, 0))
-        .with_tally_end(BlockDate::from_epoch_slot_id(2, 0))
+        .vote_start(BlockDate::from_epoch_slot_id(0, 0))
+        .tally_start(BlockDate::from_epoch_slot_id(1, 0))
+        .tally_end(BlockDate::from_epoch_slot_id(2, 0))
         .public()
         .build();
 
@@ -34,7 +33,7 @@ pub fn test_correct_proposal_number_is_returned() {
     let wallets = [&alice];
     let config = ConfigurationBuilder::new()
         .with_funds(wallets.iter().map(|x| x.to_initial_fund(1000)).collect())
-        .with_committees(&wallets)
+        .with_committees(&[alice.to_committee_id()])
         .with_slots_per_epoch(60)
         .with_certs(vec![vote_plan_cert])
         .with_explorer()

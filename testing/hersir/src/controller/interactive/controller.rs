@@ -1,14 +1,13 @@
+use crate::builder::SpawnParams;
+use crate::controller::interactive::ControllerError;
+use crate::controller::Controller;
 use crate::controller::Error;
 use chain_impl_mockchain::vote::Choice;
+use jormungandr_automation::jormungandr::JormungandrProcess;
+use jormungandr_automation::jormungandr::Version;
 use jormungandr_lib::interfaces::Value;
-use jormungandr_testing_utils::testing::jormungandr::JormungandrProcess;
-use jormungandr_testing_utils::testing::network::controller::{Controller, ControllerError};
-
-use jormungandr_testing_utils::testing::network::SpawnParams;
-use jormungandr_testing_utils::testing::FragmentSender;
-use jormungandr_testing_utils::wallet::Wallet;
-use jormungandr_testing_utils::Version;
 use jortestkit::prelude::InteractiveCommandError;
+use thor::{FragmentSender, Wallet};
 
 pub struct UserInteractionController {
     controller: Controller,
@@ -80,7 +79,7 @@ impl UserInteractionController {
         committee_alias: &str,
         vote_plan_alias: &str,
         node_alias: &str,
-    ) -> Result<jormungandr_testing_utils::testing::MemPoolCheck, Error> {
+    ) -> Result<jormungandr_automation::jormungandr::MemPoolCheck, Error> {
         let committee_address = self.controller.wallet(committee_alias)?.address();
         let vote_plan_def = self.controller.defined_vote_plan(vote_plan_alias)?;
 
@@ -93,7 +92,7 @@ impl UserInteractionController {
         let node = self.nodes.iter().find(|x| x.alias() == node_alias);
         let legacy_node = self.legacy_nodes.iter().find(|x| x.alias() == node_alias);
 
-        let fragment_sender = FragmentSender::from(self.controller.settings());
+        let fragment_sender = FragmentSender::from(&self.controller.settings().block0);
 
         let check = match (node, legacy_node) {
             (Some(node), None) => {
@@ -122,7 +121,7 @@ impl UserInteractionController {
         node_alias: &str,
         proposal_index: usize,
         choice: u8,
-    ) -> Result<jormungandr_testing_utils::testing::MemPoolCheck, Error> {
+    ) -> Result<jormungandr_automation::jormungandr::MemPoolCheck, Error> {
         let address = self.controller.wallet(wallet_alias)?.address();
         let vote_plan_def = self.controller.defined_vote_plan(vote_plan_alias)?;
 
@@ -135,7 +134,7 @@ impl UserInteractionController {
         let node = self.nodes.iter().find(|x| x.alias() == node_alias);
         let legacy_node = self.legacy_nodes.iter().find(|x| x.alias() == node_alias);
 
-        let fragment_sender = FragmentSender::from(self.controller.settings());
+        let fragment_sender = FragmentSender::from(&self.controller.settings().block0);
         let check = match (node, legacy_node) {
             (Some(node), None) => fragment_sender.send_vote_cast(
                 wallet,
@@ -170,7 +169,7 @@ impl UserInteractionController {
         to_str: &str,
         node_alias: &str,
         value: Value,
-    ) -> Result<jormungandr_testing_utils::testing::MemPoolCheck, Error> {
+    ) -> Result<jormungandr_automation::jormungandr::MemPoolCheck, Error> {
         let from_address = self.controller.wallet(from_str)?.address();
         let to_address = self.controller.wallet(to_str)?.address();
 
@@ -190,7 +189,7 @@ impl UserInteractionController {
         let node = self.nodes.iter().find(|x| x.alias() == node_alias);
         let legacy_node = self.legacy_nodes.iter().find(|x| x.alias() == node_alias);
 
-        let fragment_sender = FragmentSender::from(self.controller.settings());
+        let fragment_sender = FragmentSender::from(&self.controller.settings().block0);
 
         let check = match (node, legacy_node) {
             (Some(node), None) => fragment_sender.send_transaction(from, &to, node, value)?,

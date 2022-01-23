@@ -2,23 +2,20 @@ use super::{ALICE, BOB, LEADER_1, LEADER_2, LEADER_3, LEADER_4};
 
 use crate::networking::utils;
 use function_name::named;
+use hersir::builder::wallet::template::builder::WalletTemplateBuilder;
+use hersir::builder::NetworkBuilder;
+use hersir::builder::Node;
+use hersir::builder::SpawnParams;
+use hersir::builder::Topology;
 use hersir::controller::Context;
-use jormungandr_testing_utils::testing::network::builder::NetworkBuilder;
-use jormungandr_testing_utils::testing::network::wallet::template::builder::WalletTemplateBuilder;
-use jormungandr_testing_utils::testing::network::Node;
-use jormungandr_testing_utils::testing::network::SpawnParams;
-use jormungandr_testing_utils::testing::network::Topology;
-use jormungandr_testing_utils::testing::sync::MeasurementReportInterval;
-use jormungandr_testing_utils::testing::FragmentSender;
-use jormungandr_testing_utils::testing::FragmentSenderSetup;
-use jormungandr_testing_utils::testing::SyncNode;
-use jormungandr_testing_utils::testing::SyncWaitParams;
-use jormungandr_testing_utils::{
-    testing::node::{download_last_n_releases, get_jormungandr_bin},
-    Version,
+use jormungandr_automation::{
+    jormungandr::{download_last_n_releases, get_jormungandr_bin, Version},
+    testing::{benchmark::MeasurementReportInterval, SyncNode, SyncWaitParams},
 };
 use rstest::rstest;
 use std::path::PathBuf;
+use thor::FragmentSender;
+use thor::FragmentSenderSetup;
 
 #[rstest]
 #[case(0)]
@@ -85,7 +82,7 @@ fn test_legacy_release(legacy_app: PathBuf, version: Version) {
     let mut wallet1 = controller.wallet(ALICE).unwrap();
     let mut wallet2 = controller.wallet(BOB).unwrap();
 
-    FragmentSender::from(&controller)
+    FragmentSender::from(&controller.settings().block0)
         .send_transactions_round_trip(10, &mut wallet1, &mut wallet2, &leader2, 1_000.into())
         .unwrap();
 
@@ -157,7 +154,7 @@ fn test_legacy_disruption_release(legacy_app: PathBuf, version: Version) {
     let mut wallet1 = controller.wallet(ALICE).unwrap();
     let mut wallet2 = controller.wallet(BOB).unwrap();
 
-    let sender = FragmentSender::from(controller.settings());
+    let sender = FragmentSender::from(&controller.settings().block0);
     sender
         .send_transactions_round_trip(10, &mut wallet1, &mut wallet2, &leader2, 1_000.into())
         .unwrap();
@@ -252,7 +249,7 @@ pub fn newest_node_enters_legacy_network() {
     let mut wallet2 = controller.wallet(BOB).unwrap();
 
     // do some transaction and allow network to spin off a bit
-    let sender = FragmentSender::from(controller.settings())
+    let sender = FragmentSender::from(&controller.settings().block0)
         .clone_with_setup(FragmentSenderSetup::resend_3_times());
     sender
         .send_transactions_round_trip(10, &mut wallet1, &mut wallet2, &leader2, 1_000.into())
@@ -264,7 +261,7 @@ pub fn newest_node_enters_legacy_network() {
         .unwrap();
 
     // force newest node to keep up and talk to legacy nodes
-    let sender = FragmentSender::from(controller.settings()).clone_with_setup(
+    let sender = FragmentSender::from(&controller.settings().block0).clone_with_setup(
         FragmentSenderSetup::resend_3_times_and_sync_with(vec![&leader2]),
     );
 
