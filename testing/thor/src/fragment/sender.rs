@@ -68,8 +68,7 @@ impl FragmentSenderError {
         };
         maybe_logs
             .into_iter()
-            .map(|logs| logs.iter())
-            .flatten()
+            .flat_map(|logs| logs.iter())
             .map(String::as_str)
     }
 }
@@ -416,23 +415,6 @@ impl<'a, S: SyncNode + Send> FragmentSender<'a, S> {
         )
         .witness_mode(self.witness_mode)
         .update_vote(from, update_vote, bft_secret);
-        self.dump_fragment_if_enabled(from, &fragment, via)?;
-        self.send_fragment(from, fragment, via)
-    }
-
-    pub fn send_encrypted_tally<A: FragmentNode + SyncNode + Sized + Send>(
-        &self,
-        from: &mut Wallet,
-        vote_plan: &VotePlan,
-        via: &A,
-    ) -> Result<MemPoolCheck, FragmentSenderError> {
-        let fragment = FragmentBuilder::new(
-            &self.block0_hash,
-            &self.fees,
-            self.expiry_generator.block_date(),
-        )
-        .witness_mode(self.witness_mode)
-        .encrypted_tally(from, vote_plan);
         self.dump_fragment_if_enabled(from, &fragment, via)?;
         self.send_fragment(from, fragment, via)
     }

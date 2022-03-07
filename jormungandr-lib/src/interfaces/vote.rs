@@ -479,6 +479,12 @@ impl EncryptedTally {
     }
 }
 
+impl AsRef<[u8]> for EncryptedTally {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
 pub mod serde_base64_bytes {
     use serde::de::{Error, Visitor};
     use serde::{Deserializer, Serializer};
@@ -580,7 +586,7 @@ pub struct VoteProposalStatus {
     pub index: u8,
     pub proposal_id: Hash,
     pub options: Range<u8>,
-    pub tally: Option<Tally>,
+    pub tally: Tally,
     pub votes_cast: usize,
 }
 
@@ -622,7 +628,7 @@ impl From<vote::TallyResult> for TallyResult {
 impl From<chain_vote::Tally> for TallyResult {
     fn from(this: chain_vote::Tally) -> Self {
         Self {
-            results: this.votes.iter().copied().collect(),
+            results: this.votes.to_vec(),
             options: 0..this.votes.len() as u8,
         }
     }
@@ -696,7 +702,7 @@ impl From<vote::VoteProposalStatus> for VoteProposalStatus {
             index: this.index,
             proposal_id: this.proposal_id.into(),
             options: this.options.choice_range().clone(),
-            tally: this.tally.map(|t| t.into()),
+            tally: this.tally.into(),
             votes_cast: this.votes.size(),
         }
     }
@@ -711,7 +717,7 @@ impl From<VoteProposalStatus> for vote::VoteProposalStatus {
                 vote_proposal_status.options.end - vote_proposal_status.options.start,
             )
             .unwrap(),
-            tally: vote_proposal_status.tally.map(|t| t.into()),
+            tally: vote_proposal_status.tally.into(),
             votes: Default::default(),
         }
     }
