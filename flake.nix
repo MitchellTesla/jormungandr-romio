@@ -3,6 +3,18 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     utils.url = "github:kreisys/flake-utils";
   };
+
+  nixConfig = {
+    extra-substituters = [
+      "https://hydra.iohk.io"
+      "https://vit-ops.cachix.org"
+    ];
+    extra-trusted-public-keys = [
+      "hydra.iohk.io:f/Ea+s+dFdN+3Y/G+FDgSq+a5NEWhJGzdjvKNGv0/EQ="
+      "vit-ops.cachix.org-1:LY84nIKdW7g1cvhJ6LsupHmGtGcKAlUXo+l1KByoDho="
+    ];
+  };
+
   outputs = { self, nixpkgs, utils }:
     let
       workspaceCargo = builtins.fromTOML (builtins.readFile ./Cargo.toml);
@@ -19,7 +31,7 @@
               (builtins.readFile (./. + "/${member}/Cargo.toml"))).package)
               name version;
             src = ./.;
-            cargoSha256 = "sha256-O9kg3ZhN/Qm9u14IzxrJMP300CJ6HyNXKb7ZbTUlnxs=";
+            cargoSha256 = "sha256-80AmXP6zBuWweQXtHt9c8K9WrhrigF+CRv0reAuMvbM=";
             nativeBuildInputs = with final; [ pkg-config protobuf rustfmt ];
             buildInputs = with final; [ openssl ];
             PROTOC = "${final.protobuf}/bin/protoc";
