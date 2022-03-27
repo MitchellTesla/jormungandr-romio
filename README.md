@@ -22,10 +22,6 @@ User guide documentation available [https://input-output-hk.github.io/jormungand
 Jörmungandr refers to the Midgard Serpent in Norse mythology. (The World Serpent) It is a hint to Ouroboros, the Ancient Egyptian serpent, who eat its own tail, as well as the IOHK paper on proof of stake.
 [docs]: https://input-output-hk.github.io/jormungandr
 
-<p align="center">
-  <img src="Jormungandr-XEN.png" alt="demo" />
-</p>
-
 
 ## Master current build status
 
@@ -92,6 +88,10 @@ This will install 2 tools:
 
 * `jormungandr`: the node part of the blockchain;
 * `jcli`: a command line helper tool to help you use and setup the node;
+
+<p align="center">
+  <img src="Jormungandr-XEN.png" alt="demo" />
+</p>
 
 ## Configuration Basics
 
