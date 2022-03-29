@@ -2,7 +2,7 @@
 [![API Check](https://github.com/MitchellTesla/jormungandr-XEN/actions/workflows/api.yml/badge.svg)](https://github.com/MitchellTesla/jormungandr-XEN/actions/workflows/api.yml)
 [![Python scripts linters](https://github.com/MitchellTesla/jormungandr-XEN/actions/workflows/python-scripts.yml/badge.svg)](https://github.com/MitchellTesla/jormungandr-XEN/actions/workflows/python-scripts.yml)
 
-Do NOT use!.....Experimental repo and source code release* (WIP)
+Do NOT use!..... Alfa-ROMeo is an experimental HARDFORK of Jörmungandr actively being developed and tested * (WIP)
 
 Jörmungandr is a node implementation, written in rust, with the initial aim to support the Ouroboros type of consensus protocol.
 
@@ -19,7 +19,7 @@ User guide documentation available [https://input-output-hk.github.io/jormungand
 
 # Mythology
 
-Jörmungandr refers to the Midgard Serpent in Norse mythology. (The World Serpent) It is a hint to Ouroboros, the Ancient Egyptian serpent, who eat its own tail, as well as the IOHK paper on proof of stake.
+Jörmungandr refers to the Midgard Serpent in Norse mythology. (The World Serpent) It is a hint to Ouroboros, the Ancient Egyptian serpent, who ate it's own tail, as well as the IOHK paper on proof of stake (POS).
 [docs]: https://input-output-hk.github.io/jormungandr
 
 
