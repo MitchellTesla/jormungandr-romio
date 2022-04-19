@@ -2,15 +2,16 @@
 [![API Check](https://github.com/MitchellTesla/jormungandr-XEN/actions/workflows/api.yml/badge.svg)](https://github.com/MitchellTesla/jormungandr-XEN/actions/workflows/api.yml)
 [![Python scripts linters](https://github.com/MitchellTesla/jormungandr-XEN/actions/workflows/python-scripts.yml/badge.svg)](https://github.com/MitchellTesla/jormungandr-XEN/actions/workflows/python-scripts.yml)
 
-Do NOT use!..... Alfa-ROMeo is an experimental HARDFORK of Jörmungandr actively being developed and tested * (WIP)
+Do NOT Use!..... Alfa-ROMeo is an experimental implementation of Jörmungandr, actively being tested and developed * (WIP) work-in-progress
 
-Jörmungandr is a node implementation, written in rust, with the initial aim to support the Ouroboros type of consensus protocol.
+This experimental node implementation is written in rust, with the initial aim to support the Ouroboros type of consensus protocol.
 
-A node is a participant of a blockchain network, continuously making, sending, receiving, and validating blocks. Each node is responsible to make sure that all the rules of the protocol are followed.  
+This node is a participant of a blockchain network, continuously making, sending, receiving, and validating blocks. All nodes are responsible for making sure that all the rules of the protocol(s) are followed!!! 
 
 > Just because you call something a blockchain, that doesn't mean you aren't
-> subject to normal engineering laws...
-> 
+> subject to normal engineering laws or physics...
+
+
 User guide documentation available [https://input-output-hk.github.io/jormungandr/][docs]
 
 <p align="center">
@@ -19,9 +20,10 @@ User guide documentation available [https://input-output-hk.github.io/jormungand
 
 # Mythology
 
-Jörmungandr refers to the Midgard Serpent in Norse mythology. (The World Serpent) It is a hint to Ouroboros, the Ancient Egyptian serpent, who ate it's own tail, as well as the IOHK paper on proof of stake (POS).
+Jörmungandr refers to the Midgard Serpent in Norse mythology. (The World Serpent) It is a hint to Ouroboros, the Ancient Egyptian serpent, who ate it's own tail, as well as the IOHK paper on proof of stake (POS). ;)
 [docs]: https://input-output-hk.github.io/jormungandr
 
+## It is recommended that you use the original Jörmungandr source code and NOT this implementation.
 
 ## Master current build status
 
