@@ -20,10 +20,10 @@ User guide documentation available [https://input-output-hk.github.io/jormungand
 
 # Mythology
 
-Jörmungandr refers to the Midgard Serpent in Norse mythology. (The World Serpent) It is a hint to Ouroboros, the Ancient Egyptian serpent, who ate it's own tail, as well as the IOHK paper on proof of stake (POS). ;)
+Jörmungandr refers to the Midgard Serpent in Norse mythology. It is a hint to Ouroboros, the Ancient Egyptian serpent,(The World Serpent) who ate it's own tail, as well as ALL THE LEVERAGE, and the IOHK paper on proof of stake (POS). ;)
 [docs]: https://input-output-hk.github.io/jormungandr
 
-## It is recommended that you use the original Jörmungandr source code and NOT this implementation.
+## It is recommended that you use the original Jörmungandr source code, and NOT this specific implementation.
 
 ## Master current build status
 
