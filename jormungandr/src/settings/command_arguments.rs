@@ -1,14 +1,15 @@
-use crate::settings::{start::config::TrustedPeer, LOG_FILTER_LEVEL_POSSIBLE_VALUES};
-use multiaddr::Multiaddr;
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use structopt::StructOpt;
-use tracing::level_filters::LevelFilter;
-
 use crate::{
     blockcfg::HeaderHash,
-    settings::logging::{LogFormat, LogOutput},
+    settings::{
+        logging::{LogFormat, LogOutput},
+        start::config::TrustedPeer,
+        LOG_FILTER_LEVEL_POSSIBLE_VALUES,
+    },
 };
+use multiaddr::Multiaddr;
+use std::{net::SocketAddr, path::PathBuf};
+use structopt::StructOpt;
+use tracing::level_filters::LevelFilter;
 
 fn trusted_peer_from_json(json: &str) -> Result<TrustedPeer, serde_json::Error> {
     serde_json::from_str(json)
@@ -24,10 +25,9 @@ pub struct StartArguments {
     #[structopt(long = "config", parse(from_os_str))]
     pub node_config: Option<PathBuf>,
 
-    /// Set the secret node config (in YAML format). Can be given
-    /// multiple times.
+    /// Set the secret node config (in YAML format).
     #[structopt(long = "secret", parse(from_os_str))]
-    pub secret: Vec<PathBuf>,
+    pub secret: Option<PathBuf>,
 
     /// Path to the genesis block (the block0) of the blockchain
     #[structopt(long = "genesis-block", parse(try_from_str))]
@@ -46,9 +46,10 @@ pub struct StartArguments {
     #[structopt(long = "genesis-block-hash", parse(try_from_str))]
     pub block_0_hash: Option<HeaderHash>,
 
-    /// Start the explorer task and enable associated query endpoints.
-    #[structopt(long = "enable-explorer")]
-    pub explorer_enabled: bool,
+    /// Enable the Prometheus metrics exporter.
+    #[cfg(feature = "prometheus-metrics")]
+    #[structopt(long = "enable-prometheus")]
+    pub prometheus_enabled: bool,
 
     /// The address to listen from and accept connection from. This is the
     /// public address that will be distributed to other peers of the network.
@@ -66,7 +67,15 @@ pub struct StartArguments {
 pub struct RestArguments {
     /// REST API listening address.
     /// If not configured anywhere, defaults to REST API being disabled
-    #[structopt(long = "rest-listen")]
+    #[structopt(name = "rest-listen")]
+    pub listen: Option<SocketAddr>,
+}
+
+#[derive(StructOpt, Debug)]
+pub struct JRpcArguments {
+    /// JRPC API listening address.
+    /// If not configured anywhere, defaults to JRPC API being disabled
+    #[structopt(name = "jrpc-listen")]
     pub listen: Option<SocketAddr>,
 }
 
@@ -105,6 +114,9 @@ pub struct CommandLine {
 
     #[structopt(flatten)]
     pub rest_arguments: RestArguments,
+
+    #[structopt(flatten)]
+    pub jrpc_arguments: JRpcArguments,
 
     #[structopt(flatten)]
     pub start_arguments: StartArguments,

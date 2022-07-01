@@ -1,5 +1,5 @@
-use crate::common::jcli::JCli;
 use chain_addr::Discrimination;
+use jormungandr_automation::jcli::JCli;
 
 #[test]
 pub fn test_account_address_made_of_incorrect_ed25519_extended_key() {

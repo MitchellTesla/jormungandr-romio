@@ -2,14 +2,13 @@
 //! selecting the subset to which we propagate info
 //!
 use crate::network::p2p::Address;
-use jormungandr_lib::interfaces::Subscription;
-use jormungandr_lib::time::SystemTime;
-use poldercast::Profile;
-use serde::Serialize;
-use serde::Serializer;
-use std::convert::TryInto;
-use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use jormungandr_lib::{interfaces::Subscription, time::SystemTime};
+use serde::{Serialize, Serializer};
+use std::{
+    convert::{TryFrom, TryInto},
+    fmt,
+    hash::{Hash, Hasher},
+};
 
 mod gossip;
 pub mod layers;
@@ -18,10 +17,12 @@ mod quarantine;
 #[allow(clippy::module_inception)]
 mod topology;
 
-pub use self::gossip::{Gossip, Gossips};
-pub use self::process::{start, TaskData};
-pub use self::topology::{P2pTopology, View};
-pub use quarantine::{Quarantine, QuarantineConfig};
+pub use self::{
+    gossip::{Gossip, Gossips},
+    process::{start, TaskData, DEFAULT_NETWORK_STUCK_INTERVAL},
+    topology::{P2pTopology, View},
+};
+pub use quarantine::{QuarantineConfig, ReportRecords};
 
 /**
 # topics definition for p2p interest subscriptions
@@ -41,7 +42,7 @@ pub mod limits {
     ///
     /// a gossip only contains the Id, the address and an array of subscriptions
     /// which should not go beyond 2 2-tuples of 64bits.
-    pub const MAX_GOSSIP_SIZE: u64 = 512;
+    pub const MAX_GOSSIP_SIZE: usize = 512;
 
     /// limit the ID size to 32 bytes. Right now the Node ID are 24 bytes but
     /// for backward compatibility keep the value to 32bytes.
@@ -49,7 +50,7 @@ pub mod limits {
 }
 
 /// Unique identifier of a node in the topology
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct NodeId(keynesis::key::ed25519::PublicKey);
 
 impl From<jormungandr_lib::interfaces::NodeId> for NodeId {
@@ -62,6 +63,24 @@ impl From<jormungandr_lib::interfaces::NodeId> for NodeId {
 impl From<NodeId> for jormungandr_lib::interfaces::NodeId {
     fn from(node_id: NodeId) -> jormungandr_lib::interfaces::NodeId {
         jormungandr_lib::interfaces::NodeId::from_hex(&node_id.0.to_string()).unwrap()
+    }
+}
+
+impl TryFrom<&[u8]> for NodeId {
+    type Error = chain_crypto::PublicKeyError;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        use chain_crypto::{Ed25519, PublicKey};
+        Ok(Self::from(
+            PublicKey::<Ed25519>::from_binary(bytes)
+                .map(jormungandr_lib::interfaces::NodeId::from)?,
+        ))
+    }
+}
+
+impl fmt::Display for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -110,12 +129,13 @@ impl Hash for PeerInfo {
     }
 }
 
-impl From<&Arc<Profile>> for PeerInfo {
-    fn from(other: &Arc<Profile>) -> Self {
+impl From<Peer> for PeerInfo {
+    fn from(other: Peer) -> Self {
+        let other: poldercast::Gossip = other.into();
         Self {
             id: NodeId(other.id()),
             address: other.address(),
-            last_update: other.last_update().to_system_time().into(),
+            last_update: other.time().to_system_time().into(),
             quarantined: None,
             subscriptions: other
                 .subscriptions()

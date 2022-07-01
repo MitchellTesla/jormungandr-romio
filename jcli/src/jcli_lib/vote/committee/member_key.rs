@@ -1,10 +1,10 @@
 use crate::jcli_lib::vote::{Error, OutputFile, Seed};
-use bech32::{FromBase32, ToBase32};
-use chain_vote::encryption::PublicKey;
-use chain_vote::{MemberCommunicationPublicKey, MemberState};
+use chain_crypto::bech32::Bech32;
+use chain_vote::committee::{
+    MemberCommunicationPublicKey, MemberPublicKey, MemberSecretKey, MemberState,
+};
 use rand::rngs::OsRng;
-use rand_chacha::rand_core::SeedableRng;
-use rand_chacha::ChaCha20Rng;
+use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 use std::{convert::TryInto, io::Write, path::PathBuf};
 use structopt::StructOpt;
 
@@ -21,7 +21,7 @@ pub struct Generate {
 
     /// communication keys of all committee members
     #[structopt(long, short, name = "COMMUNICATION_KEYS",
-        parse(try_from_str = parse_member_communication_key),
+        parse(try_from_str = MemberCommunicationPublicKey::try_from_bech32_str),
         required = true,
     )]
     keys: Vec<MemberCommunicationPublicKey>,
@@ -95,15 +95,7 @@ impl Generate {
         let key = ms.secret_key();
 
         let mut output = self.output_file.open()?;
-        writeln!(
-            output,
-            "{}",
-            bech32::encode(
-                crate::jcli_lib::vote::bech32_constants::MEMBER_SK_HRP,
-                key.to_bytes().to_base32()
-            )
-            .map_err(Error::Bech32)?
-        )?;
+        writeln!(output, "{}", key.to_bech32_str())?;
         Ok(())
     }
 }
@@ -111,26 +103,11 @@ impl Generate {
 impl ToPublic {
     fn exec(self) -> Result<(), Error> {
         let line = crate::jcli_lib::utils::io::read_line(&self.input_key)?;
-        let (hrp, key) = bech32::decode(&line).map_err(Error::Bech32)?;
 
-        if hrp != crate::jcli_lib::vote::bech32_constants::MEMBER_SK_HRP {
-            return Err(Error::InvalidSecretKey);
-        }
-
-        let key = chain_vote::encryption::SecretKey::from_bytes(
-            &Vec::<u8>::from_base32(&key).map_err(|_| Error::InvalidSecretKey)?,
-        )
-        .ok_or(Error::InvalidSecretKey)?;
-
-        let pk = chain_vote::encryption::Keypair::from_secretkey(key).public_key;
+        let pk: MemberPublicKey = MemberSecretKey::try_from_bech32_str(&line)?.to_public();
 
         let mut output = self.output_file.open()?;
-        let key = bech32::encode(
-            crate::jcli_lib::vote::bech32_constants::MEMBER_PK_HRP,
-            pk.to_bytes().to_base32(),
-        )
-        .map_err(Error::Bech32)?;
-        writeln!(output, "{}", key)?;
+        writeln!(output, "{}", pk.to_bech32_str())?;
 
         Ok(())
     }
@@ -143,16 +120,4 @@ impl MemberKey {
             MemberKey::ToPublic(args) => args.exec(),
         }
     }
-}
-
-fn parse_member_communication_key(key: &str) -> Result<MemberCommunicationPublicKey, Error> {
-    let (hrp, raw_key) = bech32::decode(key).map_err(Error::Bech32)?;
-
-    if hrp != crate::jcli_lib::vote::bech32_constants::COMMUNICATION_PK_HRP {
-        return Err(Error::InvalidPublicKey);
-    }
-
-    let pk = PublicKey::from_bytes(&Vec::<u8>::from_base32(&raw_key).map_err(Error::Bech32)?)
-        .ok_or(Error::InvalidPublicKey)?;
-    Ok(MemberCommunicationPublicKey::from_public_key(pk))
 }

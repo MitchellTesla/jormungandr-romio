@@ -1,18 +1,22 @@
-use crate::common::{
-    jcli::JCli, jormungandr::ConfigurationBuilder, startup, transaction_utils::TransactionHash,
+use crate::startup;
+use chain_impl_mockchain::block::BlockDate;
+use jormungandr_automation::{
+    jcli::JCli,
+    jormungandr::ConfigurationBuilder,
+    testing::{benchmark_consumption, benchmark_endurance},
 };
-use jormungandr_lib::interfaces::{ActiveSlotCoefficient, KESUpdateSpeed, Mempool};
-use jormungandr_testing_utils::testing::{benchmark_consumption, benchmark_endurance};
+use jormungandr_lib::interfaces::{ActiveSlotCoefficient, KesUpdateSpeed, Mempool};
 use jortestkit::process::Wait;
 use std::time::Duration;
+use thor::TransactionHash;
 
 #[test]
 pub fn test_blocks_are_being_created_for_7_hours() {
     let jcli: JCli = Default::default();
     let duration_48_hours = Duration::from_secs(25_200);
 
-    let mut receiver = startup::create_new_account_address();
-    let mut sender = startup::create_new_account_address();
+    let mut receiver = thor::Wallet::default();
+    let mut sender = thor::Wallet::default();
     let (jormungandr, _) = startup::start_stake_pool(
         &[sender.clone()],
         &[],
@@ -20,16 +24,17 @@ pub fn test_blocks_are_being_created_for_7_hours() {
             .with_slots_per_epoch(20)
             .with_consensus_genesis_praos_active_slot_coeff(ActiveSlotCoefficient::MAXIMUM)
             .with_slot_duration(3)
-            .with_kes_update_speed(KESUpdateSpeed::new(43200).unwrap())
+            .with_kes_update_speed(KesUpdateSpeed::new(43200).unwrap())
             .with_mempool(Mempool {
                 pool_max_entries: 1_000_000usize.into(),
                 log_max_entries: 1_000_000usize.into(),
+                persistent_log: None,
             }),
     )
     .unwrap();
 
     let benchmark_endurance = benchmark_endurance("test_blocks_are_being_created_for_48_hours")
-        .target(duration_48_hours.clone())
+        .target(duration_48_hours)
         .start();
 
     let mut benchmark_consumption =
@@ -39,15 +44,14 @@ pub fn test_blocks_are_being_created_for_7_hours() {
             .start();
 
     loop {
-        let new_transaction = sender
-            .transaction_to(
-                &jormungandr.genesis_block_hash(),
-                &jormungandr.fees(),
-                receiver.address(),
-                1.into(),
-            )
-            .unwrap()
-            .encode();
+        let new_transaction = thor::FragmentBuilder::new(
+            &jormungandr.genesis_block_hash(),
+            &jormungandr.fees(),
+            BlockDate::first().next_epoch(),
+        )
+        .transaction(&sender, receiver.address(), 1.into())
+        .unwrap()
+        .encode();
 
         let wait: Wait = Wait::new(Duration::from_secs(10), 10);
 
@@ -64,7 +68,7 @@ pub fn test_blocks_are_being_created_for_7_hours() {
                         );
                 benchmark_endurance.exception(message.clone()).print();
                 benchmark_consumption.exception(message.clone()).print();
-                panic!(message);
+                std::panic::panic_any(message);
             }
         };
         sender.confirm_transaction();

@@ -1,4 +1,7 @@
-use crate::common::{configuration::NodeConfigBuilder, jcli::JCli, jormungandr::starter::Starter};
+use jormungandr_automation::{
+    jcli::JCli,
+    jormungandr::{NodeConfigBuilder, Starter},
+};
 
 #[test]
 pub fn test_correct_id_is_returned_for_block_tip_if_only_genesis_block_exists() {

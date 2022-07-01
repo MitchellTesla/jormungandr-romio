@@ -1,44 +1,55 @@
-use crate::common::{
-    jcli::{FragmentsCheck, JCli},
-    jormungandr::ConfigurationBuilder,
-    startup,
+use crate::startup;
+use chain_core::property::FromStr;
+use chain_impl_mockchain::{
+    chaintypes::ConsensusType,
+    fee::LinearFee,
+    tokens::{identifier::TokenIdentifier, minting_policy::MintingPolicy},
 };
-
-use chain_impl_mockchain::{chaintypes::ConsensusType, fee::LinearFee};
-use jormungandr_lib::interfaces::{ActiveSlotCoefficient, BlockDate, Mempool};
-use jormungandr_testing_utils::testing::{
-    node::time, FragmentGenerator, FragmentSender, FragmentSenderSetup, FragmentVerifier,
-    MemPoolCheck,
+use jormungandr_automation::{
+    jormungandr::{ConfigurationBuilder, MemPoolCheck},
+    testing::time,
 };
-use jortestkit::prelude::Wait;
+use jormungandr_lib::interfaces::{ActiveSlotCoefficient, BlockDate, InitialToken, Mempool};
+use mjolnir::generators::FragmentGenerator;
 use std::time::Duration;
+use thor::{FragmentSender, FragmentSenderSetup, FragmentVerifier};
 
 #[test]
 pub fn send_all_fragments() {
-    let receiver = startup::create_new_account_address();
-    let sender = startup::create_new_account_address();
+    let receiver = thor::Wallet::default();
+    let sender = thor::Wallet::default();
 
     let (jormungandr, _) = startup::start_stake_pool(
         &[sender.clone()],
         &[receiver.clone()],
         ConfigurationBuilder::new()
             .with_block0_consensus(ConsensusType::GenesisPraos)
-            .with_slots_per_epoch(60)
+            .with_slots_per_epoch(20)
+            .with_block_content_max_size(100000.into())
             .with_consensus_genesis_praos_active_slot_coeff(ActiveSlotCoefficient::MAXIMUM)
             .with_slot_duration(3)
             .with_linear_fees(LinearFee::new(1, 1, 1))
-            .with_explorer()
             .with_mempool(Mempool {
                 pool_max_entries: 1_000_000usize.into(),
                 log_max_entries: 1_000_000usize.into(),
                 persistent_log: None,
+            })
+            .with_token(InitialToken {
+                // FIXME: this works because I know it's the VotePlanBuilder's default, but
+                // probably should me more explicit.
+                token_id: TokenIdentifier::from_str(
+                    "00000000000000000000000000000000000000000000000000000000.00000000",
+                )
+                .unwrap()
+                .into(),
+                policy: MintingPolicy::new().into(),
+                to: vec![sender.to_initial_token(1_000_000)],
             }),
     )
     .unwrap();
 
-    let fragment_sender = FragmentSender::new(
-        jormungandr.genesis_block_hash(),
-        jormungandr.fees(),
+    let fragment_sender = FragmentSender::from_with_setup(
+        jormungandr.block0_configuration(),
         FragmentSenderSetup::no_verify(),
     );
 
@@ -48,24 +59,23 @@ pub fn send_all_fragments() {
         sender,
         receiver,
         jormungandr.to_remote(),
-        jormungandr.explorer(),
         time_era.slots_per_epoch(),
+        2,
+        2,
+        2,
         fragment_sender,
     );
 
     fragment_generator.prepare(BlockDate::new(1, 0));
 
-    let jcli: JCli = Default::default();
-
-    let fragment_check = FragmentsCheck::new(jcli, &jormungandr);
-    let wait = Wait::new(Duration::from_secs(1), 25);
-    fragment_check.wait_until_all_processed(&wait).unwrap();
-
-    time::wait_for_epoch(1, jormungandr.explorer());
+    time::wait_for_epoch(2, jormungandr.rest());
 
     let mem_checks: Vec<MemPoolCheck> = fragment_generator.send_all().unwrap();
-    let verifier = FragmentVerifier;
-    verifier
-        .wait_and_verify_all_are_in_block(Duration::from_secs(2), mem_checks, &jormungandr)
-        .unwrap();
+
+    FragmentVerifier::wait_and_verify_all_are_in_block(
+        Duration::from_secs(2),
+        mem_checks,
+        &jormungandr,
+    )
+    .unwrap();
 }

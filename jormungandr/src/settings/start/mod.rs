@@ -1,17 +1,22 @@
 pub mod config;
 pub mod network;
 
-use self::config::{Config, Leadership};
-use self::network::{Protocol, TrustedPeer};
-use crate::settings::logging::{LogFormat, LogInfoMsg, LogOutput, LogSettings, LogSettingsEntry};
-use crate::settings::{command_arguments::*, Block0Info};
-use crate::topology::layers::{self, LayersConfig, PreferredListConfig, RingsConfig};
+use self::{
+    config::{Config, Leadership},
+    network::{Protocol, TrustedPeer},
+};
+use crate::{
+    settings::{
+        command_arguments::*,
+        logging::{LogFormat, LogInfoMsg, LogOutput, LogSettings, LogSettingsEntry},
+        Block0Info,
+    },
+    topology::layers::{self, LayersConfig, PreferredListConfig, RingsConfig},
+};
 use chain_crypto::Ed25519;
-use jormungandr_lib::crypto::key::SigningKey;
-pub use jormungandr_lib::interfaces::{Cors, Mempool, Rest, Tls};
-use jormungandr_lib::multiaddr;
-use std::convert::TryFrom;
-use std::{fs::File, path::PathBuf};
+pub use jormungandr_lib::interfaces::{Cors, JRpc, Mempool, Rest, Tls};
+use jormungandr_lib::{crypto::key::SigningKey, multiaddr};
+use std::{convert::TryFrom, fs::File, path::PathBuf};
 use thiserror::Error;
 use tracing::level_filters::LevelFilter;
 
@@ -47,12 +52,14 @@ pub struct Settings {
     pub network: network::Configuration,
     pub storage: Option<PathBuf>,
     pub block_0: Block0Info,
-    pub secrets: Vec<PathBuf>,
+    pub secret: Option<PathBuf>,
     pub rest: Option<Rest>,
+    pub jrpc: Option<JRpc>,
     pub mempool: Mempool,
     pub rewards_report_all: bool,
     pub leadership: Leadership,
-    pub explorer: bool,
+    #[cfg(feature = "prometheus-metrics")]
+    pub prometheus: bool,
     pub no_blockchain_updates_warning_interval: std::time::Duration,
     pub block_hard_deadline: u32,
 }
@@ -136,18 +143,29 @@ impl RawSettings {
 
     fn rest_config(&self) -> Option<Rest> {
         let cmd_listen_opt = self.command_line.rest_arguments.listen;
-        let config_rest_opt = self.config.as_ref().and_then(|cfg| cfg.rest.as_ref());
+        let config_rest_opt = self.config.as_ref().and_then(|cfg| cfg.rest.clone());
         match (config_rest_opt, cmd_listen_opt) {
             (Some(config_rest), Some(cmd_listen)) => Some(Rest {
                 listen: cmd_listen,
-                ..config_rest.clone()
+                ..config_rest
             }),
-            (Some(config_rest), None) => Some(config_rest.clone()),
+            (Some(config_rest), None) => Some(config_rest),
             (None, Some(cmd_listen)) => Some(Rest {
                 listen: cmd_listen,
                 tls: None,
                 cors: None,
             }),
+            (None, None) => None,
+        }
+    }
+
+    fn jrpc_config(&self) -> Option<JRpc> {
+        let cmd_listen_opt = self.command_line.jrpc_arguments.listen;
+        let config_rpc_opt = self.config.as_ref().and_then(|cfg| cfg.jrpc.clone());
+        match (config_rpc_opt, cmd_listen_opt) {
+            (Some(_), Some(cmd_listen)) => Some(JRpc { listen: cmd_listen }),
+            (Some(config_rpc), None) => Some(config_rpc),
+            (None, Some(cmd_listen)) => Some(JRpc { listen: cmd_listen }),
             (None, None) => None,
         }
     }
@@ -159,12 +177,13 @@ impl RawSettings {
     /// This function will print&exit if anything is not as it should be.
     pub fn try_into_settings(self) -> Result<Settings, Error> {
         let rest = self.rest_config();
+        let jrpc = self.jrpc_config();
         let RawSettings {
             command_line,
             config,
         } = self;
         let command_arguments = &command_line.start_arguments;
-        let network = generate_network(&command_arguments, &config)?;
+        let network = generate_network(command_arguments, &config)?;
 
         let storage = match (
             command_arguments.storage.as_ref(),
@@ -175,12 +194,11 @@ impl RawSettings {
             (None, None) => None,
         };
 
-        let mut secrets = command_arguments.secret.clone();
-        if let Some(secret_files) = config.as_ref().map(|cfg| cfg.secret_files.clone()) {
-            secrets.extend(secret_files);
-        }
-
-        if secrets.is_empty() {
+        let secret = command_arguments
+            .secret
+            .clone()
+            .or_else(|| config.as_ref().and_then(|cfg| cfg.secret_file.clone()));
+        if secret.is_none() {
             tracing::warn!(
                 "Node started without path to the stored secret keys (not a stake pool or a BFT leader)"
             );
@@ -196,9 +214,10 @@ impl RawSettings {
             (None, Some(hash)) => Block0Info::Hash(*hash),
         };
 
-        let explorer = command_arguments.explorer_enabled
+        #[cfg(feature = "prometheus-metrics")]
+        let prometheus = command_arguments.prometheus_enabled
             || config.as_ref().map_or(false, |cfg| {
-                cfg.explorer
+                cfg.prometheus
                     .as_ref()
                     .map_or(false, |settings| settings.enabled)
             });
@@ -207,16 +226,18 @@ impl RawSettings {
             storage,
             block_0,
             network,
-            secrets,
+            secret,
             rewards_report_all: command_line.rewards_report_all,
             rest,
+            jrpc,
             mempool: config
                 .as_ref()
                 .map_or(Mempool::default(), |cfg| cfg.mempool.clone()),
             leadership: config
                 .as_ref()
                 .map_or(Leadership::default(), |cfg| cfg.leadership.clone()),
-            explorer,
+            #[cfg(feature = "prometheus-metrics")]
+            prometheus,
             no_blockchain_updates_warning_interval: config
                 .as_ref()
                 .and_then(|config| config.no_blockchain_updates_warning_interval)
@@ -336,29 +357,32 @@ fn generate_network(
         max_connections: p2p
             .max_connections
             .unwrap_or(network::DEFAULT_MAX_CONNECTIONS),
-        max_inbound_connections: p2p
-            .max_inbound_connections
-            .unwrap_or(network::DEFAULT_MAX_INBOUND_CONNECTIONS),
+        max_client_connections: p2p
+            .max_client_connections
+            .unwrap_or(network::DEFAULT_MAX_CLIENT_CONNECTIONS),
         timeout: std::time::Duration::from_secs(15),
         allow_private_addresses: p2p.allow_private_addresses,
-        max_unreachable_nodes_to_connect_per_event: p2p.max_unreachable_nodes_to_connect_per_event,
         gossip_interval: p2p
             .gossip_interval
             .map(|d| d.into())
             .unwrap_or_else(|| std::time::Duration::from_secs(10)),
+        network_stuck_check: p2p
+            .network_stuck_check
+            .map(Into::into)
+            .unwrap_or(crate::topology::DEFAULT_NETWORK_STUCK_INTERVAL),
         max_bootstrap_attempts: p2p.max_bootstrap_attempts,
         http_fetch_block0_service,
         bootstrap_from_trusted_peers,
         skip_bootstrap,
     };
 
-    if network.max_inbound_connections > network.max_connections {
+    if network.max_client_connections > network.max_connections {
         tracing::warn!(
-            "p2p.max_inbound_connections is larger than p2p.max_connections, decreasing from {} to {}",
-            network.max_inbound_connections,
+            "p2p.max_client_connections is larger than p2p.max_connections, decreasing from {} to {}",
+            network.max_client_connections,
             network.max_connections
         );
-        network.max_inbound_connections = network.max_connections;
+        network.max_client_connections = network.max_connections;
     }
 
     Ok(network)

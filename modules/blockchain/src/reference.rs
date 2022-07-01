@@ -37,8 +37,7 @@ pub enum Error {
     #[error("The block could not apply successfully")]
     Ledger {
         #[source]
-        #[from]
-        source: ledger::Error,
+        source: Box<ledger::Error>,
     },
 
     #[error("The block's epoch validity failed to successfully apply")]
@@ -81,8 +80,12 @@ impl Reference {
     /// before this block. Thought he block_parent_hash may refer to a block hash from
     /// another blockchain or may have a specific meaning
     pub fn new(block0: &Block) -> Result<Self, Error> {
-        let header = block0.header.clone();
-        let ledger = Ledger::new(header.hash(), block0.contents.iter_slice())?;
+        let header = block0.header().clone();
+        let ledger = Ledger::new(header.hash(), block0.contents().iter_slice()).map_err(|e| {
+            Error::Ledger {
+                source: Box::new(e),
+            }
+        })?;
         let epoch_info = Arc::new(EpochInfo::new(block0, &ledger)?);
         let previous_epoch_state = None;
 
@@ -176,22 +179,27 @@ impl Reference {
         self.check_block_date(block)?;
 
         let transition_state = Self::chain_epoch_info(Arc::clone(&self), block)?;
-        let metadata = block.header.get_content_eval_context();
+        let metadata = block.header().get_content_eval_context();
 
-        transition_state.epoch_info.check_header(&block.header)?;
+        transition_state.epoch_info.check_header(block.header())?;
 
-        let ledger = transition_state.ledger().apply_block(
-            transition_state
-                .epoch_info
-                .epoch_ledger_parameters()
-                .clone(),
-            &block.contents,
-            &metadata,
-        )?;
+        let ledger = transition_state
+            .ledger()
+            .apply_block(
+                transition_state
+                    .epoch_info
+                    .epoch_ledger_parameters()
+                    .clone(),
+                block.contents(),
+                &metadata,
+            )
+            .map_err(|e| Error::Ledger {
+                source: Box::new(e),
+            })?;
 
         Ok(Self {
             ledger,
-            header: block.header.clone(),
+            header: block.header().clone(),
             epoch_info: transition_state.epoch_info.clone(),
             previous_epoch_state: Some(self),
         })
@@ -202,18 +210,27 @@ impl Reference {
     /// and distribute the rewards
     pub fn epoch_transition(&self) -> Result<Self, Error> {
         // 1. apply protocol changes
-        let ledger = self.ledger.apply_protocol_changes()?;
+        let ledger = self
+            .ledger
+            .apply_protocol_changes()
+            .map_err(|e| Error::Ledger {
+                source: Box::new(e),
+            })?;
         // 2. distribute rewards
         let ledger = if let Some(distribution) = self
             .epoch_info
             .epoch_leadership_schedule()
             .stake_distribution()
         {
-            let (ledger, _rewards) = ledger.distribute_rewards(
-                distribution,
-                self.epoch_info.epoch_ledger_parameters(),
-                RewardsInfoParameters::default(),
-            )?;
+            let (ledger, _rewards) = ledger
+                .distribute_rewards(
+                    distribution,
+                    self.epoch_info.epoch_ledger_parameters(),
+                    RewardsInfoParameters::default(),
+                )
+                .map_err(|e| Error::Ledger {
+                    source: Box::new(e),
+                })?;
             ledger
         } else {
             ledger
@@ -247,7 +264,7 @@ impl Reference {
     }
 
     fn chain_epoch_info(self: Arc<Self>, block: &Block) -> Result<Arc<Self>, Error> {
-        let epoch = block.header.block_date().epoch;
+        let epoch = block.header().block_date().epoch;
 
         if self.block_date().epoch < epoch {
             let transition = self.epoch_transition()?;
@@ -267,10 +284,10 @@ impl Reference {
     }
 
     fn check_child(&self, block: &Block) -> Result<(), Error> {
-        if self.hash() != block.header.block_parent_hash() {
+        if self.hash() != block.header().block_parent_hash() {
             Err(Error::NotTheParentBlock {
                 expected: self.hash(),
-                current: block.header.block_parent_hash(),
+                current: block.header().block_parent_hash(),
             })
         } else {
             Ok(())
@@ -278,10 +295,10 @@ impl Reference {
     }
 
     fn check_chain_length(&self, block: &Block) -> Result<(), Error> {
-        if self.chain_length().increase() != block.header.chain_length() {
+        if self.chain_length().increase() != block.header().chain_length() {
             Err(Error::InvalidChainLength {
                 expected: self.chain_length().increase(),
-                current: block.header.chain_length(),
+                current: block.header().chain_length(),
             })
         } else {
             Ok(())
@@ -289,10 +306,10 @@ impl Reference {
     }
 
     fn check_block_date(&self, block: &Block) -> Result<(), Error> {
-        if self.block_date() >= block.header.block_date() {
+        if self.block_date() >= block.header().block_date() {
             Err(Error::InvalidBlockDate {
                 parent: self.block_date(),
-                current: block.header.block_date(),
+                current: block.header().block_date(),
             })
         } else {
             Ok(())

@@ -1,17 +1,14 @@
-use crate::blockcfg::{Block, Header, HeaderHash};
-use crate::blockchain::{Storage, Tip};
-use crate::intercom::{ClientMsg, Error, ReplySendError, ReplyStreamHandle};
-use crate::utils::async_msg::MessageQueue;
-use crate::utils::task::TokioServiceInfo;
-use chain_core::property::HasHeader;
-
+use crate::{
+    blockcfg::{Block, Header, HeaderHash},
+    blockchain::{Storage, Tip},
+    intercom::{ClientMsg, Error, ReplySendError, ReplyStreamHandle},
+    utils::{async_msg::MessageQueue, task::TokioServiceInfo},
+};
 use futures::prelude::*;
+use std::{convert::identity, time::Duration};
 use tokio::time::timeout;
 use tracing::{span, Level};
 use tracing_futures::Instrument;
-
-use std::convert::identity;
-use std::time::Duration;
 
 const PROCESS_TIMEOUT_GET_BLOCK_TIP: u64 = 5;
 #[allow(dead_code)]
@@ -197,7 +194,7 @@ async fn handle_get_headers(
 ) -> Result<(), ReplySendError> {
     fuse_send_items(
         ids.into_iter()
-            .map(|id| get_block_from_storage(&storage, id).map(|block| block.header())),
+            .map(|id| get_block_from_storage(&storage, id).map(|block| block.header().clone())),
         handle,
     )
     .await
@@ -209,7 +206,7 @@ async fn handle_get_headers_range(
     to: HeaderHash,
     handle: ReplyStreamHandle<Header>,
 ) -> Result<(), ReplySendError> {
-    send_range_from_storage(storage, from, to, |block| block.header(), handle).await
+    send_range_from_storage(storage, from, to, |block| block.header().clone(), handle).await
 }
 
 async fn handle_pull_blocks(

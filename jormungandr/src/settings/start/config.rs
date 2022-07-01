@@ -1,23 +1,22 @@
 use crate::{
     network::p2p::Address,
-    settings::logging::{LogFormat, LogOutput},
-    settings::LOG_FILTER_LEVEL_POSSIBLE_VALUES,
+    settings::{
+        logging::{LogFormat, LogOutput},
+        LOG_FILTER_LEVEL_POSSIBLE_VALUES,
+    },
     topology::QuarantineConfig,
 };
-pub use jormungandr_lib::interfaces::{Cors, LayersConfig, Rest, Tls, TrustedPeer};
+pub use jormungandr_lib::interfaces::{Cors, JRpc, LayersConfig, Rest, Tls, TrustedPeer};
 use jormungandr_lib::{interfaces::Mempool, time::Duration};
-
 use multiaddr::Multiaddr;
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
-use tracing::level_filters::LevelFilter;
-
 use std::path::PathBuf;
+use tracing::level_filters::LevelFilter;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    #[serde(default)]
-    pub secret_files: Vec<PathBuf>,
+    pub secret_file: Option<PathBuf>,
     pub storage: Option<PathBuf>,
     pub log: Option<ConfigLogSettings>,
 
@@ -30,13 +29,16 @@ pub struct Config {
 
     pub rest: Option<Rest>,
 
+    pub jrpc: Option<JRpc>,
+
     #[serde(default)]
     pub p2p: P2pConfig,
 
     #[serde(default)]
     pub http_fetch_block0_service: Vec<String>,
 
-    pub explorer: Option<Explorer>,
+    #[cfg(feature = "prometheus-metrics")]
+    pub prometheus: Option<Prometheus>,
 
     /// the time interval with no blockchain updates after which alerts are thrown
     #[serde(default)]
@@ -60,7 +62,7 @@ pub struct ConfigLogSettings {
     pub output: Option<LogOutput>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct P2pConfig {
     /// The public address to which other peers may connect to
@@ -86,8 +88,7 @@ pub struct P2pConfig {
 
     /// Limit on the number of simultaneous client connections.
     /// If not specified, an internal default limit is used.
-    #[serde(alias = "max_client_connections")]
-    pub max_inbound_connections: Option<usize>,
+    pub max_client_connections: Option<usize>,
 
     /// This setting is not used and is left for backward compatibility.
     pub max_connections_threshold: Option<usize>,
@@ -105,15 +106,6 @@ pub struct P2pConfig {
     #[serde(default)]
     pub layers: LayersConfig,
 
-    /// set the maximum number of unreachable nodes to contact at a time for every
-    /// new notification. The default value is 20.
-    ///
-    /// Every time a new propagation event is triggered, the node will select
-    /// randomly a certain amount of unreachable nodes to connect to in addition
-    /// to the one selected by other p2p topology layer.
-    #[serde(default)]
-    pub max_unreachable_nodes_to_connect_per_event: Option<usize>,
-
     /// interval to start gossiping with new nodes, changing the value will
     /// affect the bandwidth. The more often the node will gossip the more
     /// bandwidth the node will need. The less often the node gossips the less
@@ -122,6 +114,13 @@ pub struct P2pConfig {
     /// The default value is 10seconds.
     #[serde(default)]
     pub gossip_interval: Option<Duration>,
+
+    /// if no gossip has been received in the last interval, try to connect
+    /// to nodes that were previously known to this node.
+    ///
+    /// The default value is 5 min.
+    #[serde(default)]
+    pub network_stuck_check: Option<Duration>,
 
     /// The number of times to retry bootstrapping from trusted peers. The default
     /// value of None will result in the bootstrap process retrying indefinitely. A
@@ -146,28 +145,8 @@ pub struct Leadership {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct Explorer {
+pub struct Prometheus {
     pub enabled: bool,
-}
-
-impl Default for P2pConfig {
-    fn default() -> Self {
-        P2pConfig {
-            public_address: None,
-            listen: None,
-            node_key_file: None,
-            trusted_peers: None,
-            max_connections: None,
-            max_inbound_connections: None,
-            max_connections_threshold: None,
-            allow_private_addresses: false,
-            policy: QuarantineConfig::default(),
-            layers: LayersConfig::default(),
-            max_unreachable_nodes_to_connect_per_event: None,
-            gossip_interval: None,
-            max_bootstrap_attempts: None,
-        }
-    }
 }
 
 impl Default for Leadership {

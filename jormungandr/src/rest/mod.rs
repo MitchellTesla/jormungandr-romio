@@ -1,48 +1,98 @@
 //! REST API of the node
-
-pub mod context;
-pub mod explorer;
+#[cfg(feature = "prometheus-metrics")]
+mod prometheus;
 pub mod v0;
 mod v1;
 
-pub use self::context::{Context, ContextLock, FullContext};
-
-use jormungandr_lib::interfaces::{Rest, Tls};
-
+use crate::context::{Context, ContextLock, ServerStopper};
 use futures::{channel::mpsc, prelude::*};
+use jormungandr_lib::interfaces::{Cors, Tls};
 use std::{error::Error, net::SocketAddr, time::Duration};
 use warp::Filter;
 
-#[derive(Clone)]
-pub struct ServerStopper(mpsc::Sender<()>);
-
-impl ServerStopper {
-    pub fn stop(&self) {
-        self.0.clone().try_send(()).unwrap();
-    }
+pub struct Config {
+    pub listen: SocketAddr,
+    pub tls: Option<Tls>,
+    pub cors: Option<Cors>,
+    #[cfg(feature = "prometheus-metrics")]
+    pub enable_prometheus: bool,
 }
 
-pub async fn start_rest_server(config: Rest, explorer_enabled: bool, context: ContextLock) {
+pub async fn start_rest_server(config: Config, context: ContextLock) {
     let (stopper_tx, stopper_rx) = mpsc::channel::<()>(0);
     let stopper_rx = stopper_rx.into_future().map(|_| ());
     context
         .write()
         .await
-        .set_server_stopper(ServerStopper(stopper_tx));
+        .set_rest_server_stopper(ServerStopper::new(stopper_tx));
+    let api = v0::filter(context.clone()).or(v1::filter(context.clone()));
 
-    let api =
-        warp::path!("api" / ..).and(v0::filter(context.clone()).or(v1::filter(context.clone())));
-    if explorer_enabled {
-        let explorer = explorer::filter(context);
-        setup_cors(api.or(explorer), config, stopper_rx).await;
+    let api = warp::path!("api" / ..)
+        .and(api)
+        .with(warp::filters::trace::trace(|info| {
+            use http_zipkin::get_trace_context;
+            use tracing::field::Empty;
+            let span = tracing::span!(
+                tracing::Level::DEBUG,
+                "rest_api_request",
+                method = %info.method(),
+                path = info.path(),
+                version = ?info.version(),
+                remote_addr = Empty,
+                trace_id = Empty,
+                span_id = Empty,
+                parent_span_id = Empty,
+            );
+            if let Some(remote_addr) = info.remote_addr() {
+                span.record("remote_addr", &remote_addr.to_string().as_str());
+            }
+            if let Some(trace_context) = get_trace_context(info.request_headers()) {
+                span.record("trace_id", &trace_context.trace_id().to_string().as_str());
+                span.record("span_id", &trace_context.span_id().to_string().as_str());
+                if let Some(parent_span_id) = trace_context.parent_id() {
+                    span.record("parent_span_id", &parent_span_id.to_string().as_str());
+                }
+            }
+            span
+        }));
+
+    setup_prometheus(api, config, context, stopper_rx).await;
+}
+
+#[cfg(feature = "prometheus-metrics")]
+async fn setup_prometheus<App>(
+    app: App,
+    config: Config,
+    context: ContextLock,
+    shutdown_signal: impl Future<Output = ()> + Send + 'static,
+) where
+    App: Filter<Error = warp::Rejection> + Clone + Send + Sync + 'static,
+    App::Extract: warp::Reply,
+{
+    if config.enable_prometheus {
+        let prometheus = prometheus::filter(context.clone());
+        setup_cors(app.or(prometheus), config, shutdown_signal).await;
     } else {
-        setup_cors(api, config, stopper_rx).await;
+        setup_cors(app, config, shutdown_signal).await;
     }
+}
+
+#[cfg(not(feature = "prometheus-metrics"))]
+async fn setup_prometheus<App>(
+    app: App,
+    config: Config,
+    _context: ContextLock,
+    shutdown_signal: impl Future<Output = ()> + Send + 'static,
+) where
+    App: Filter<Error = warp::Rejection> + Clone + Send + Sync + 'static,
+    App::Extract: warp::Reply,
+{
+    setup_cors(app, config, shutdown_signal).await;
 }
 
 async fn setup_cors<App>(
     app: App,
-    config: Rest,
+    config: Config,
     shutdown_signal: impl Future<Output = ()> + Send + 'static,
 ) where
     App: Filter<Error = warp::Rejection> + Clone + Send + Sync + 'static,
@@ -57,11 +107,25 @@ async fn setup_cors<App>(
 
         let mut cors = warp::cors().allow_origins(allowed_origins);
 
+        for header in cors_config.allowed_headers {
+            cors = cors.allow_header(header.0);
+        }
+
+        for method in cors_config.allowed_methods {
+            cors = cors.allow_method(method.0);
+        }
+
         if let Some(max_age) = cors_config.max_age_secs {
             cors = cors.max_age(Duration::from_secs(max_age));
         }
 
-        run_server_with_app(app.with(cors), config.listen, config.tls, shutdown_signal).await;
+        run_server_with_app(
+            app.with(cors.build()),
+            config.listen,
+            config.tls,
+            shutdown_signal,
+        )
+        .await;
     } else {
         run_server_with_app(app, config.listen, config.tls, shutdown_signal).await;
     }

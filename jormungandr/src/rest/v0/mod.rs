@@ -2,7 +2,6 @@ mod handlers;
 pub mod logic;
 
 use crate::rest::{display_internal_server_error, ContextLock};
-
 use warp::{http::StatusCode, Filter, Rejection, Reply};
 
 pub fn filter(
@@ -57,32 +56,13 @@ pub fn filter(
     let leaders = {
         let root = warp::path!("leaders" / ..).boxed();
 
-        let get = warp::path::end()
-            .and(warp::get())
-            .and(with_context.clone())
-            .and_then(handlers::get_leaders)
-            .boxed();
-
-        let post = warp::path::end()
-            .and(warp::post())
-            .and(warp::body::json())
-            .and(with_context.clone())
-            .and_then(handlers::post_leaders)
-            .boxed();
-
         let logs = warp::path!("logs")
             .and(warp::get())
             .and(with_context.clone())
             .and_then(handlers::get_leaders_logs)
             .boxed();
 
-        let delete = warp::path!(u32)
-            .and(warp::delete())
-            .and(with_context.clone())
-            .and_then(handlers::delete_leaders)
-            .boxed();
-
-        root.and(get.or(post).or(logs).or(delete)).boxed()
+        root.and(logs).boxed()
     };
 
     let p2p = {
@@ -210,7 +190,13 @@ pub fn filter(
             .and_then(handlers::get_rewards_info_epoch)
             .boxed();
 
-        root.and(history.or(epoch)).boxed()
+        let remaining = warp::path!("remaining")
+            .and(warp::get())
+            .and(with_context.clone())
+            .and_then(handlers::get_rewards_remaining)
+            .boxed();
+
+        root.and(history.or(epoch).or(remaining)).boxed()
     };
 
     let utxo = warp::path!("utxo" / String / u8)
@@ -235,10 +221,29 @@ pub fn filter(
 
         let vote_plans = warp::path!("plans")
             .and(warp::get())
-            .and(with_context)
+            .and(with_context.clone())
             .and_then(handlers::get_active_vote_plans)
             .boxed();
         root.and(committees.or(vote_plans)).boxed()
+    };
+
+    #[cfg(feature = "evm")]
+    let address_mapping = {
+        let root = warp::path!("address_mapping" / ..);
+
+        let get_jor_address = warp::path!("jormungandr_address" / String)
+            .and(warp::get())
+            .and(with_context.clone())
+            .and_then(handlers::get_jor_address)
+            .boxed();
+
+        let get_evm_address = warp::path!("evm_address" / String)
+            .and(warp::get())
+            .and(with_context)
+            .and_then(handlers::get_evm_address)
+            .boxed();
+
+        root.and(get_jor_address.or(get_evm_address)).boxed()
     };
 
     let routes = shutdown
@@ -257,10 +262,12 @@ pub fn filter(
         .or(rewards)
         .or(utxo)
         .or(diagnostic)
-        .or(votes)
-        .boxed();
+        .or(votes);
 
-    root.and(routes).recover(handle_rejection).boxed()
+    #[cfg(feature = "evm")]
+    let routes = routes.or(address_mapping);
+
+    root.and(routes.boxed()).recover(handle_rejection).boxed()
 }
 
 /// Convert rejections to actual HTTP errors

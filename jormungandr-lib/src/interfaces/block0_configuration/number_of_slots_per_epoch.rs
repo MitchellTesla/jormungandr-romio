@@ -8,7 +8,7 @@ use std::{convert::TryFrom, fmt};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-pub struct NumberOfSlotsPerEpoch(pub(crate) u32);
+pub struct NumberOfSlotsPerEpoch(u32);
 
 impl NumberOfSlotsPerEpoch {
     /// minimal value for the number of slots per epoch
@@ -18,7 +18,7 @@ impl NumberOfSlotsPerEpoch {
     ///
     /// assert_eq!(NumberOfSlotsPerEpoch::MINIMUM, NumberOfSlotsPerEpoch::new(1).unwrap())
     /// ```
-    pub const MINIMUM: Self = NumberOfSlotsPerEpoch(MINIMUM_NUMBER_OF_SLOTS_PER_EPOCH);
+    pub const MINIMUM: Self = Self(MINIMUM_NUMBER_OF_SLOTS_PER_EPOCH);
 
     /// maximal value for the number of slots per epoch
     ///
@@ -27,17 +27,17 @@ impl NumberOfSlotsPerEpoch {
     ///
     /// assert_eq!(NumberOfSlotsPerEpoch::MAXIMUM, NumberOfSlotsPerEpoch::new(1_000_000).unwrap())
     /// ```
-    pub const MAXIMUM: Self = NumberOfSlotsPerEpoch(MAXIMUM_NUMBER_OF_SLOTS_PER_EPOCH);
+    pub const MAXIMUM: Self = Self(MAXIMUM_NUMBER_OF_SLOTS_PER_EPOCH);
 
     /// create a new `NumberOfSlotsPerEpoch` value
     ///
     /// returns `None` if the value is not within the boundaries of
     /// `NumberOfSlotsPerEpoch::MINIMUM` and `NumberOfSlotsPerEpoch::MAXIMUM`.
     pub fn new(v: u32) -> Option<Self> {
-        if v < MINIMUM_NUMBER_OF_SLOTS_PER_EPOCH || MAXIMUM_NUMBER_OF_SLOTS_PER_EPOCH < v {
+        if !(MINIMUM_NUMBER_OF_SLOTS_PER_EPOCH..=MAXIMUM_NUMBER_OF_SLOTS_PER_EPOCH).contains(&v) {
             None
         } else {
-            Some(NumberOfSlotsPerEpoch(v))
+            Some(Self(v))
         }
     }
 }

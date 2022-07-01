@@ -2,7 +2,7 @@ mod handlers;
 mod logic;
 
 use crate::rest::{display_internal_server_error, ContextLock};
-
+use jormungandr_lib::interfaces::VotePlanId;
 use warp::{http::StatusCode, Filter, Rejection, Reply};
 
 pub fn filter(
@@ -30,14 +30,29 @@ pub fn filter(
 
         let logs = warp::path!("logs")
             .and(warp::get())
-            .and(with_context)
+            .and(with_context.clone())
             .and_then(handlers::get_fragment_logs)
             .boxed();
 
         root.and(post.or(status).or(logs)).boxed()
     };
 
-    let routes = fragments;
+    let votes_with_plan = warp::path!("votes" / "plan" / VotePlanId / "account-votes" / String)
+        .and(warp::get())
+        .and(with_context.clone())
+        .and_then(handlers::get_account_votes_with_plan);
+
+    let votes = warp::path!("votes" / "plan" / "account-votes" / String)
+        .and(warp::get())
+        .and(with_context.clone())
+        .and_then(handlers::get_account_votes);
+
+    let votes_count = warp::path!("votes" / "plan" / "accounts-votes-count")
+        .and(warp::get())
+        .and(with_context)
+        .and_then(handlers::get_accounts_votes_count);
+
+    let routes = fragments.or(votes_with_plan).or(votes).or(votes_count);
 
     root.and(routes).recover(handle_rejection).boxed()
 }

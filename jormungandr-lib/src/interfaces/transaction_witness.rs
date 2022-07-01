@@ -1,3 +1,4 @@
+use chain_core::{packer::Codec, property::DeserializeFromSlice};
 use chain_impl_mockchain::transaction::Witness;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{fmt, str::FromStr};
@@ -10,7 +11,7 @@ pub enum TransactionWitnessFromStrError {
     #[error("Invalid prefix, expected '{expected}' but received '{got}'")]
     InvalidHrp { expected: String, got: String },
     #[error("Invalid encoding")]
-    Invalid(#[from] chain_core::mempack::ReadError),
+    Invalid(#[from] chain_core::property::ReadError),
 }
 
 const HRP: &str = "witness";
@@ -26,14 +27,13 @@ impl TransactionWitness {
 
         let bytes = self.as_ref().serialize_as_vec().unwrap();
 
-        bech32::encode(&HRP, bytes.to_base32()).unwrap()
+        bech32::encode(HRP, bytes.to_base32(), bech32::Variant::Bech32).unwrap()
     }
 
     pub fn from_bech32_str(s: &str) -> Result<Self, TransactionWitnessFromStrError> {
         use bech32::FromBase32;
-        use chain_core::mempack::{ReadBuf, Readable as _};
 
-        let (hrp, data) = bech32::decode(s)?;
+        let (hrp, data, _variant) = bech32::decode(s)?;
         if hrp != HRP {
             return Err(TransactionWitnessFromStrError::InvalidHrp {
                 expected: HRP.to_owned(),
@@ -42,8 +42,10 @@ impl TransactionWitness {
         }
         let bytes = Vec::<u8>::from_base32(&data)?;
 
-        let mut reader = ReadBuf::from(&bytes);
-        Ok(Witness::read(&mut reader).map(TransactionWitness)?)
+        Ok(
+            Witness::deserialize_from_slice(&mut Codec::new(bytes.as_slice()))
+                .map(TransactionWitness)?,
+        )
     }
 }
 
@@ -93,13 +95,10 @@ impl Serialize for TransactionWitness {
         use chain_core::property::Serialize as _;
         use serde::ser::Error as _;
 
-        let bytes = self.as_ref().serialize_as_vec().map_err(S::Error::custom)?;
-
         if serializer.is_human_readable() {
-            use bech32::ToBase32 as _;
-            let bech32 = bech32::encode(HRP, bytes.to_base32()).map_err(S::Error::custom)?;
-            serializer.serialize_str(&bech32)
+            serializer.serialize_str(&self.to_bech32_str())
         } else {
+            let bytes = self.as_ref().serialize_as_vec().map_err(S::Error::custom)?;
             serializer.serialize_bytes(&bytes)
         }
     }
@@ -110,7 +109,6 @@ impl<'de> Deserialize<'de> for TransactionWitness {
     where
         D: Deserializer<'de>,
     {
-        use chain_core::mempack::{ReadBuf, Readable as _};
         use serde::de::{self, Visitor};
         struct TransactionWitnessVisitor;
         impl<'de> Visitor<'de> for TransactionWitnessVisitor {
@@ -124,7 +122,7 @@ impl<'de> Deserialize<'de> for TransactionWitness {
                 E: de::Error,
             {
                 use bech32::FromBase32;
-                let (hrp, data) = bech32::decode(s).map_err(E::custom)?;
+                let (hrp, data, _variant) = bech32::decode(s).map_err(E::custom)?;
                 if hrp != HRP {
                     return Err(E::custom(format!(
                         "Invalid prefix: expected '{}' but was '{}'",
@@ -140,8 +138,7 @@ impl<'de> Deserialize<'de> for TransactionWitness {
             where
                 E: de::Error,
             {
-                let mut reader = ReadBuf::from(bytes);
-                Witness::read(&mut reader)
+                Witness::deserialize_from_slice(&mut Codec::new(bytes))
                     .map_err(E::custom)
                     .map(TransactionWitness)
             }
@@ -164,7 +161,7 @@ mod test {
         fn arbitrary<G: Gen>(g: &mut G) -> Self {
             match u8::arbitrary(g) % 3 {
                 0 => Witness::Utxo(Arbitrary::arbitrary(g)).into(),
-                1 => Witness::Account(Arbitrary::arbitrary(g)).into(),
+                1 => Witness::Account(Arbitrary::arbitrary(g), Arbitrary::arbitrary(g)).into(),
                 2 => {
                     use crate::crypto::key::KeyPair;
                     use chain_crypto::Ed25519Bip32;
@@ -174,7 +171,7 @@ mod test {
                     let cc = pk.chain_code();
                     let pk_ed = chain_crypto::PublicKey::from_binary(&pk.public_key()).unwrap();
 
-                    Witness::OldUtxo(pk_ed, cc, Arbitrary::arbitrary(g)).into()
+                    Witness::OldUtxo(pk_ed, *cc, Arbitrary::arbitrary(g)).into()
                 }
                 3 => unimplemented!(), // Multisig
                 _ => unreachable!(),

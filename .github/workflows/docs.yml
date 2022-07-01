@@ -8,6 +8,11 @@ on:
       - 'book.toml'
       - 'doc/**'
       - '!doc/api/**.yaml'
+  pull_request:
+    paths:
+      - 'book.toml'
+      - 'doc/**'
+      - '!doc/api/**.yaml'
 
 jobs:
   build-and-deploy:
@@ -36,6 +41,7 @@ jobs:
         run: mdbook build
 
       - name: Deploy
+        if: ${{ github.ref == 'refs/heads/master' }}
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}

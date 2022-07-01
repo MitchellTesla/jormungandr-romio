@@ -1,8 +1,8 @@
-use crate::common::{
-    jormungandr::{ConfigurationBuilder, Starter, StartupVerificationMode},
-    resources,
-};
 use assert_fs::TempDir;
+use jormungandr_automation::{
+    jormungandr::{ConfigurationBuilder, Starter, StartupVerificationMode},
+    testing::resources,
+};
 use jormungandr_lib::interfaces::Tls;
 
 #[test]

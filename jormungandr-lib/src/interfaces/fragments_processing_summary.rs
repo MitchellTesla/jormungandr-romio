@@ -1,5 +1,4 @@
 use chain_impl_mockchain::fragment::FragmentId;
-
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 
@@ -12,7 +11,9 @@ pub enum FragmentRejectionReason {
     FragmentAlreadyInLog,
     FragmentInvalid,
     PreviousFragmentInvalid,
-    PoolOverflow { pool_number: usize },
+    PoolOverflow,
+    FragmentExpired,
+    FragmentValidForTooLong,
 }
 
 /// Information about a fragment rejected by the mempool. This is different from being rejected by
@@ -42,7 +43,7 @@ impl FragmentRejectionReason {
             self,
             FragmentRejectionReason::FragmentInvalid
                 | FragmentRejectionReason::PreviousFragmentInvalid
-                | FragmentRejectionReason::PoolOverflow { .. }
+                | FragmentRejectionReason::PoolOverflow
         )
     }
 }
@@ -52,12 +53,20 @@ impl FragmentsProcessingSummary {
     pub fn is_error(&self) -> bool {
         self.rejected.iter().any(|info| info.reason.is_error())
     }
+
+    pub fn fragment_ids(&self) -> Vec<FragmentId> {
+        self.rejected
+            .iter()
+            .map(|info| &info.id)
+            .chain(self.accepted.iter())
+            .cloned()
+            .collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
     use quickcheck::{Arbitrary, Gen};
     use quickcheck_macros::quickcheck;
 
@@ -67,9 +76,7 @@ mod tests {
                 0 => FragmentRejectionReason::FragmentAlreadyInLog,
                 1 => FragmentRejectionReason::FragmentInvalid,
                 2 => FragmentRejectionReason::PreviousFragmentInvalid,
-                3 => FragmentRejectionReason::PoolOverflow {
-                    pool_number: g.next_u64() as usize,
-                },
+                3 => FragmentRejectionReason::PoolOverflow,
                 _ => unreachable!(),
             }
         }

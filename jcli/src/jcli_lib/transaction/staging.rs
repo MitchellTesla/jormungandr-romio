@@ -1,21 +1,21 @@
-use crate::jcli_lib::certificate::committee_encrypted_vote_tally_sign;
 use crate::jcli_lib::{
     certificate::{
-        committee_vote_plan_sign, committee_vote_tally_sign, pool_owner_sign,
-        stake_delegation_account_binding_sign,
+        self, committee_vote_plan_sign, committee_vote_tally_sign, evm_mapping_sign,
+        pool_owner_sign, stake_delegation_account_binding_sign, update_proposal_sign,
+        update_vote_sign,
     },
     transaction::Error,
     utils::io,
 };
-use chain_addr::Address;
+use chain_addr::{Address, Kind};
 use chain_impl_mockchain::{
     self as chain,
     certificate::{Certificate, CertificatePayload, PoolSignature, SignedCertificate},
     fee::FeeAlgorithm,
     fragment::Fragment,
     transaction::{
-        self, Balance, InputOutputBuilder, Output, Payload, SetAuthData, SetIOs, Transaction,
-        TransactionSignDataHash, TxBuilder, TxBuilderState,
+        self, Balance, InputOutputBuilder, Output, Payload, SetAuthData, SetTtl, Transaction,
+        TransactionSignDataHash, TxBuilder, TxBuilderState, UnspecifiedAccountIdentifier,
     },
     value::{Value, ValueError},
 };
@@ -38,9 +38,11 @@ pub struct Staging {
     kind: StagingKind,
     inputs: Vec<interfaces::TransactionInput>,
     outputs: Vec<interfaces::TransactionOutput>,
+    valid_until: Option<interfaces::BlockDate>,
     witnesses: Vec<interfaces::TransactionWitness>,
     extra: Option<interfaces::Certificate>,
     extra_authed: Option<interfaces::SignedCertificate>,
+    evm_transaction: Option<interfaces::EvmTransaction>,
 }
 
 impl std::fmt::Display for StagingKind {
@@ -66,9 +68,11 @@ impl Staging {
             kind: StagingKind::Balancing,
             inputs: Vec::new(),
             outputs: Vec::new(),
+            valid_until: None,
             witnesses: Vec::new(),
             extra: None,
             extra_authed: None,
+            evm_transaction: None,
         }
     }
 
@@ -94,6 +98,16 @@ impl Staging {
         })
     }
 
+    pub fn set_expiry_date(&mut self, input: interfaces::BlockDate) -> Result<(), Error> {
+        if self.kind != StagingKind::Balancing {
+            return Err(Error::TxKindToSetValidityTimeInvalid { kind: self.kind });
+        }
+
+        self.valid_until = Some(input);
+
+        Ok(())
+    }
+
     pub fn add_input(&mut self, input: interfaces::TransactionInput) -> Result<(), Error> {
         if self.kind != StagingKind::Balancing {
             return Err(Error::TxKindToAddInputInvalid { kind: self.kind });
@@ -111,6 +125,28 @@ impl Staging {
 
         self.outputs.push(output.into());
 
+        Ok(())
+    }
+
+    pub fn add_account(
+        &mut self,
+        account: interfaces::Address,
+        value: interfaces::Value,
+    ) -> Result<(), Error> {
+        let account_id = match Address::from(account).kind() {
+            Kind::Account(key) => {
+                UnspecifiedAccountIdentifier::from_single_account(key.clone().into())
+            }
+            Kind::Multisig(key) => UnspecifiedAccountIdentifier::from_multi_account((*key).into()),
+            Kind::Single(_) => return Err(Error::AccountAddressSingle),
+            Kind::Group(_, _) => return Err(Error::AccountAddressGroup),
+            Kind::Script(_) => return Err(Error::AccountAddressScript),
+        };
+
+        self.add_input(interfaces::TransactionInput {
+            input: interfaces::TransactionInputType::Account(account_id.into()),
+            value,
+        })?;
         Ok(())
     }
 
@@ -145,8 +181,15 @@ impl Staging {
             Some(c) => match c.clone().into() {
                 Certificate::StakeDelegation(s) => {
                     let builder = self.builder_after_witness(TxBuilder::new().set_payload(&s))?;
-                    let sc = stake_delegation_account_binding_sign(s, keys, builder)
-                        .map_err(|e| Error::CertificateError { error: e })?;
+                    let sc = keys
+                        .len()
+                        .eq(&1)
+                        .then(|| {
+                            stake_delegation_account_binding_sign(s, &keys[0], builder)
+                                .map_err(|e| Error::CertificateError { error: e })
+                        })
+                        .ok_or(certificate::Error::ExpectingOnlyOneSigningKey { got: keys.len() })
+                        .map_err(|error| Error::CertificateError { error })??;
                     self.extra_authed = Some(sc.into());
                 }
                 Certificate::PoolRegistration(s) => {
@@ -180,33 +223,96 @@ impl Staging {
                 Certificate::OwnerStakeDelegation(_) => unreachable!(),
                 Certificate::VotePlan(vp) => {
                     let builder = self.builder_after_witness(TxBuilder::new().set_payload(&vp))?;
-                    let sc = committee_vote_plan_sign(vp, keys, builder)
-                        .map_err(|e| Error::CertificateError { error: e })?;
+                    let sc = keys
+                        .len()
+                        .eq(&1)
+                        .then(|| {
+                            committee_vote_plan_sign(vp, &keys[0], builder)
+                                .map_err(|e| Error::CertificateError { error: e })
+                        })
+                        .ok_or(certificate::Error::ExpectingOnlyOneSigningKey { got: keys.len() })
+                        .map_err(|error| Error::CertificateError { error })??;
                     self.extra_authed = Some(sc.into())
                 }
                 Certificate::VoteCast(_) => unreachable!(),
                 Certificate::VoteTally(vt) => {
                     let builder = self.builder_after_witness(TxBuilder::new().set_payload(&vt))?;
-                    let sc = committee_vote_tally_sign(vt, keys, builder)
-                        .map_err(|e| Error::CertificateError { error: e })?;
+                    let sc = keys
+                        .len()
+                        .eq(&1)
+                        .then(|| {
+                            committee_vote_tally_sign(vt, &keys[0], builder)
+                                .map_err(|e| Error::CertificateError { error: e })
+                        })
+                        .ok_or(certificate::Error::ExpectingOnlyOneSigningKey { got: keys.len() })
+                        .map_err(|error| Error::CertificateError { error })??;
                     self.extra_authed = Some(sc.into())
                 }
-                Certificate::EncryptedVoteTally(vt) => {
-                    let builder = self.builder_after_witness(TxBuilder::new().set_payload(&vt))?;
-                    let sc = committee_encrypted_vote_tally_sign(vt, keys, builder)
-                        .map_err(|e| Error::CertificateError { error: e })?;
+                Certificate::UpdateProposal(up) => {
+                    let builder = self.builder_after_witness(TxBuilder::new().set_payload(&up))?;
+                    let sc = keys
+                        .len()
+                        .eq(&1)
+                        .then(|| {
+                            update_proposal_sign(up, &keys[0], builder)
+                                .map_err(|e| Error::CertificateError { error: e })
+                        })
+                        .ok_or(certificate::Error::ExpectingOnlyOneSigningKey { got: keys.len() })
+                        .map_err(|error| Error::CertificateError { error })??;
                     self.extra_authed = Some(sc.into())
                 }
+                Certificate::UpdateVote(uv) => {
+                    let builder = self.builder_after_witness(TxBuilder::new().set_payload(&uv))?;
+                    let sc = keys
+                        .len()
+                        .eq(&1)
+                        .then(|| {
+                            update_vote_sign(uv, &keys[0], builder)
+                                .map_err(|e| Error::CertificateError { error: e })
+                        })
+                        .ok_or(certificate::Error::ExpectingOnlyOneSigningKey { got: keys.len() })
+                        .map_err(|error| Error::CertificateError { error })??;
+                    self.extra_authed = Some(sc.into())
+                }
+                Certificate::EvmMapping(uv) => {
+                    let builder = self.builder_after_witness(TxBuilder::new().set_payload(&uv))?;
+                    let sc = keys
+                        .len()
+                        .eq(&1)
+                        .then(|| {
+                            evm_mapping_sign(uv, &keys[0], builder)
+                                .map_err(|e| Error::CertificateError { error: e })
+                        })
+                        .ok_or(certificate::Error::ExpectingOnlyOneSigningKey { got: keys.len() })
+                        .map_err(|error| Error::CertificateError { error })??;
+                    self.extra_authed = Some(sc.into())
+                }
+                Certificate::MintToken(_) => unreachable!(),
             },
         };
         self.kind = StagingKind::Authed;
         Ok(())
     }
 
-    pub fn set_extra(&mut self, extra: chain::certificate::Certificate) -> Result<(), Error> {
+    pub fn set_extra(&mut self, extra: interfaces::Certificate) -> Result<(), Error> {
         match self.kind {
             StagingKind::Balancing => {
-                self.extra = Some(extra.into());
+                self.evm_transaction = None;
+                self.extra = Some(extra);
+                Ok(())
+            }
+            kind => Err(Error::TxKindToAddExtraInvalid { kind }),
+        }
+    }
+
+    pub fn set_evm_transaction(
+        &mut self,
+        evm_transaction: interfaces::EvmTransaction,
+    ) -> Result<(), Error> {
+        match self.kind {
+            StagingKind::Balancing => {
+                self.evm_transaction = Some(evm_transaction);
+                self.extra = None;
                 Ok(())
             }
             kind => Err(Error::TxKindToAddExtraInvalid { kind }),
@@ -237,6 +343,10 @@ impl Staging {
         FA: FeeAlgorithm,
         P: Payload,
     {
+        if self.valid_until.is_none() {
+            return Err(Error::CannotFinalizeWithoutValidUntil);
+        }
+
         let ios = self.get_inputs_outputs();
         let pdata = payload.payload_data();
         let (balance, added_outputs, _) =
@@ -267,7 +377,7 @@ impl Staging {
             None => {
                 self.finalize_payload(&chain::transaction::NoExtra, fee_algorithm, output_policy)
             }
-            Some(ref c) => match c.clone().into() {
+            Some(c) => match c.clone().into() {
                 Certificate::PoolRegistration(c) => {
                     self.finalize_payload(&c, fee_algorithm, output_policy)
                 }
@@ -289,9 +399,19 @@ impl Staging {
                 Certificate::VoteTally(vt) => {
                     self.finalize_payload(&vt, fee_algorithm, output_policy)
                 }
-                Certificate::EncryptedVoteTally(vt) => {
+                Certificate::UpdateProposal(vt) => {
                     self.finalize_payload(&vt, fee_algorithm, output_policy)
                 }
+                Certificate::UpdateVote(vt) => {
+                    self.finalize_payload(&vt, fee_algorithm, output_policy)
+                }
+                Certificate::MintToken(vt) => {
+                    self.finalize_payload(&vt, fee_algorithm, output_policy)
+                }
+                Certificate::EvmMapping(vt) => {
+                    self.finalize_payload(&vt, fee_algorithm, output_policy)
+                }
+
                 Certificate::OwnerStakeDelegation(c) => {
                     let balance = self.finalize_payload(&c, fee_algorithm, output_policy)?;
                     match self.inputs() {
@@ -345,7 +465,7 @@ impl Staging {
 
     fn builder_after_witness<P: Payload>(
         &self,
-        builder: TxBuilderState<SetIOs<P>>,
+        builder: TxBuilderState<SetTtl<P>>,
     ) -> Result<TxBuilderState<SetAuthData<P>>, Error> {
         if self.witnesses.len() != self.inputs.len() {
             return Err(Error::TxKindToFinalizeInvalid { kind: self.kind });
@@ -353,7 +473,12 @@ impl Staging {
 
         let ios = self.get_inputs_outputs().build();
         let witnesses: Vec<_> = self.witnesses.iter().map(|w| w.clone().into()).collect();
+        let valid_until = self
+            .valid_until
+            .expect("transaction validity time should be set at this point")
+            .into();
         Ok(builder
+            .set_expiry_date(valid_until)
             .set_ios(&ios.inputs, &ios.outputs)
             .set_witnesses(&witnesses))
     }
@@ -393,6 +518,9 @@ impl Staging {
                         Certificate::VoteCast(vote_cast) => {
                             self.make_fragment(&vote_cast, &(), Fragment::VoteCast)
                         }
+                        Certificate::MintToken(mint_token) => {
+                            self.make_fragment(&mint_token, &(), Fragment::MintToken)
+                        }
                         _ => unreachable!(),
                     },
                 }
@@ -423,8 +551,14 @@ impl Staging {
                     SignedCertificate::VoteTally(vt, a) => {
                         self.make_fragment(&vt, &a, Fragment::VoteTally)
                     }
-                    SignedCertificate::EncryptedVoteTally(vt, a) => {
-                        self.make_fragment(&vt, &a, Fragment::EncryptedVoteTally)
+                    SignedCertificate::UpdateProposal(vt, a) => {
+                        self.make_fragment(&vt, &a, Fragment::UpdateProposal)
+                    }
+                    SignedCertificate::UpdateVote(vt, a) => {
+                        self.make_fragment(&vt, &a, Fragment::UpdateVote)
+                    }
+                    SignedCertificate::EvmMapping(vt, a) => {
+                        self.make_fragment(&vt, &a, Fragment::EvmMapping)
                     }
                 }
             }
@@ -433,21 +567,30 @@ impl Staging {
 
     fn transaction_sign_data_hash_on<P>(
         &self,
-        builder: TxBuilderState<SetIOs<P>>,
+        builder: TxBuilderState<SetTtl<P>>,
     ) -> TransactionSignDataHash {
         let inputs: Vec<transaction::Input> =
             self.inputs.iter().map(|i| i.clone().into()).collect();
         let outputs: Vec<_> = self.outputs.iter().map(|o| o.clone().into()).collect();
+        let valid_until = self
+            .valid_until
+            .expect("transaction validity time should be set at this point")
+            .into();
         builder
+            .set_expiry_date(valid_until)
             .set_ios(&inputs, &outputs)
             .get_auth_data_for_witness()
             .hash()
     }
 
-    pub fn transaction_sign_data_hash(&self) -> TransactionSignDataHash {
-        match &self.extra {
+    pub fn transaction_sign_data_hash(&self) -> Result<TransactionSignDataHash, Error> {
+        if self.kind != StagingKind::Finalizing {
+            return Err(Error::TxKindToSignDataHashInvalid { kind: self.kind });
+        }
+
+        let res = match &self.extra {
             None => self.transaction_sign_data_hash_on(TxBuilder::new().set_nopayload()),
-            Some(ref c) => match c.clone().into() {
+            Some(c) => match c.clone().into() {
                 Certificate::PoolRegistration(c) => {
                     self.transaction_sign_data_hash_on(TxBuilder::new().set_payload(&c))
                 }
@@ -472,11 +615,22 @@ impl Staging {
                 Certificate::VoteTally(vt) => {
                     self.transaction_sign_data_hash_on(TxBuilder::new().set_payload(&vt))
                 }
-                Certificate::EncryptedVoteTally(vt) => {
+                Certificate::UpdateProposal(vt) => {
+                    self.transaction_sign_data_hash_on(TxBuilder::new().set_payload(&vt))
+                }
+                Certificate::UpdateVote(vt) => {
+                    self.transaction_sign_data_hash_on(TxBuilder::new().set_payload(&vt))
+                }
+                Certificate::MintToken(vt) => {
+                    self.transaction_sign_data_hash_on(TxBuilder::new().set_payload(&vt))
+                }
+                Certificate::EvmMapping(vt) => {
                     self.transaction_sign_data_hash_on(TxBuilder::new().set_payload(&vt))
                 }
             },
-        }
+        };
+
+        Ok(res)
     }
 
     /*
@@ -525,7 +679,7 @@ impl Staging {
         let cert_extra = self.extra_authed.clone().map(|cert| cert.strip_auth());
         let cert_payload = cert_extra
             .as_ref()
-            .or_else(|| self.extra.as_ref())
+            .or(self.extra.as_ref())
             .map(|cert| CertificatePayload::from(&cert.0));
         let cert_slice = cert_payload.as_ref().map(CertificatePayload::as_slice);
         let inputs_count = self.inputs().len() as u8;

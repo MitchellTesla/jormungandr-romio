@@ -1,20 +1,23 @@
 use super::{Client, ClientBuilder, InboundSubscriptions};
-use crate::blockcfg::HeaderHash;
-use crate::network::{
-    grpc, p2p::comm::PeerComms, security_params::NONCE_LEN, Channels, ConnectionState,
+use crate::{
+    blockcfg::HeaderHash,
+    network::{grpc, p2p::comm::PeerComms, security_params::NONCE_LEN, Channels, ConnectionState},
+    topology::NodeId,
 };
-use chain_core::mempack::{self, ReadBuf, Readable};
-use chain_network::data::{AuthenticatedNodeId, NodeId};
-use chain_network::error::{self as net_error, HandshakeError};
-
-use futures::channel::oneshot;
-use futures::future::BoxFuture;
-use futures::prelude::*;
-use futures::ready;
+use chain_core::{
+    packer::Codec,
+    property::{DeserializeFromSlice, ReadError},
+};
+use chain_network::{
+    data::AuthenticatedNodeId,
+    error::{self as net_error, Code as ErrorCode, HandshakeError},
+};
+use futures::{channel::oneshot, future::BoxFuture, prelude::*, ready};
 use rand::Rng;
-
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
 use tracing_futures::Instrument;
 
 /// Initiates a client connection, returning a connection handle and
@@ -24,7 +27,11 @@ use tracing_futures::Instrument;
 /// gRPC protocol, all other code is generic in terms of network-core traits.
 /// This is intentional, to facilitate extension to different protocols
 /// in the future.
-pub fn connect(state: ConnectionState, channels: Channels) -> (ConnectHandle, ConnectFuture) {
+pub fn connect(
+    state: ConnectionState,
+    channels: Channels,
+    expected_server_id: NodeId,
+) -> (ConnectHandle, ConnectFuture) {
     let (sender, receiver) = oneshot::channel();
     let peer = state.peer();
     let keypair = state.global.keypair.clone();
@@ -45,15 +52,30 @@ pub fn connect(state: ConnectionState, channels: Channels) -> (ConnectHandle, Co
             .handshake(&nonce[..])
             .await
             .map_err(ConnectError::Handshake)?;
-        let mut buf = ReadBuf::from(hr.block0_id.as_bytes());
-        let block0_hash = HeaderHash::read(&mut buf).map_err(ConnectError::DecodeBlock0)?;
+        let block0_hash =
+            HeaderHash::deserialize_from_slice(&mut Codec::new(hr.block0_id.as_bytes()))
+                .map_err(ConnectError::DecodeBlock0)?;
         let expected = state.global.block0_hash;
         match_block0(expected, block0_hash)?;
 
         // Validate the server's node ID
         let peer_id = validate_peer_auth(hr.auth, &nonce)?;
+        // TODO: this should be better done by adding a network level authenticated / encrypted connection.
+        if peer_id != expected_server_id {
+            tracing::warn!(
+                "server id ({}) is different from the expected one ({}), aborting handshake",
+                peer_id,
+                expected_server_id
+            );
+            return Err(ConnectError::Handshake(HandshakeError::InvalidNodeId(
+                net_error::Error::new(
+                    ErrorCode::Unknown, // should really use Unauthenticated, but it's not available yet in the library
+                    "returned id is different from expected one",
+                ),
+            )));
+        }
 
-        tracing::debug!(node_id = ?peer_id, "authenticated server peer node");
+        tracing::debug!(node_id = %peer_id, "authenticated server peer node");
 
         // Send client authentication
         let auth = keypair.sign(&hr.nonce);
@@ -62,8 +84,7 @@ pub fn connect(state: ConnectionState, channels: Channels) -> (ConnectHandle, Co
             .await
             .map_err(ConnectError::ClientAuth)?;
 
-        let mut comms = PeerComms::new();
-        comms.set_node_id(peer_id);
+        let mut comms = PeerComms::new(peer.address());
         let (block_sub, fragment_sub, gossip_sub) = future::try_join3(
             grpc_client
                 .clone()
@@ -78,7 +99,7 @@ pub fn connect(state: ConnectionState, channels: Channels) -> (ConnectHandle, Co
         .await
         .map_err(ConnectError::Subscription)?;
         let inbound = InboundSubscriptions {
-            peer_address: peer.connection,
+            peer_id,
             block_events: block_sub,
             fragments: fragment_sub,
             gossip: gossip_sub,
@@ -107,9 +128,12 @@ pub fn connect(state: ConnectionState, channels: Channels) -> (ConnectHandle, Co
 
 // Validate the server peer's node ID
 fn validate_peer_auth(auth: AuthenticatedNodeId, nonce: &[u8]) -> Result<NodeId, ConnectError> {
-    auth.verify(&nonce)
+    use super::super::convert::Decode;
+    auth.verify(nonce)
         .map_err(ConnectError::PeerSignatureVerificationFailed)?;
-    Ok(auth.into())
+    chain_network::data::NodeId::from(auth)
+        .decode()
+        .map_err(ConnectError::InvalidNodeId)
 }
 
 /// Handle used to monitor the P2P client in process of
@@ -153,7 +177,7 @@ pub enum ConnectError {
     #[error("protocol handshake failed: {0}")]
     Handshake(#[source] HandshakeError),
     #[error("failed to decode genesis block in response")]
-    DecodeBlock0(#[source] mempack::ReadError),
+    DecodeBlock0(#[source] ReadError),
     #[error(
         "genesis block hash {peer_responded} reported by the peer is not the expected {expected}"
     )]
@@ -162,7 +186,7 @@ pub enum ConnectError {
         peer_responded: HeaderHash,
     },
     #[error("invalid node ID in server Handshake response")]
-    InvalidNodeId(#[source] chain_crypto::PublicKeyError),
+    InvalidNodeId(#[source] chain_network::error::Error),
     #[error("invalid signature data in server Handshake response")]
     InvalidNodeSignature(#[source] chain_crypto::SignatureError),
     #[error("signature verification failed for peer node ID")]

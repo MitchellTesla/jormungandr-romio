@@ -1,12 +1,11 @@
 use super::config;
-use crate::network::p2p::Address;
-use crate::topology::{layers::LayersConfig, NodeId, QuarantineConfig};
-
+use crate::{
+    network::p2p::Address,
+    topology::{layers::LayersConfig, NodeId, QuarantineConfig},
+};
 use chain_crypto::Ed25519;
 use jormungandr_lib::{crypto::key::SigningKey, multiaddr};
-use std::net::SocketAddr;
-use std::str;
-use std::time::Duration;
+use std::{net::SocketAddr, str, time::Duration};
 
 /// Protocol to use for a connection.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -45,7 +44,7 @@ pub const DEFAULT_MAX_CONNECTIONS: usize = 256;
 
 /// The limit on the number of simultaneous P2P client connections
 /// used unless the corresponding configuration option is specified.
-pub const DEFAULT_MAX_INBOUND_CONNECTIONS: usize = 192;
+pub const DEFAULT_MAX_CLIENT_CONNECTIONS: usize = 192;
 
 /// The default timeout for connections
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -61,7 +60,7 @@ pub struct Configuration {
 
     pub public_address: Option<Address>,
 
-    // Secret key used to authenticate gossips, the public part is used as an identifier of the node
+    // Secret key used to authenticate communications, the public part is used as an identifier of the node
     pub node_key: SigningKey<Ed25519>,
 
     /// list of trusted addresses
@@ -74,7 +73,7 @@ pub struct Configuration {
     pub max_connections: usize,
 
     /// Maximum allowed number of client connections.
-    pub max_inbound_connections: usize,
+    pub max_client_connections: usize,
 
     /// the default value for the timeout for inactive connection
     pub timeout: Duration,
@@ -86,9 +85,9 @@ pub struct Configuration {
     /// Whether to allow non-public IP addresses in gossip
     pub allow_private_addresses: bool,
 
-    pub max_unreachable_nodes_to_connect_per_event: Option<usize>,
-
     pub gossip_interval: Duration,
+
+    pub network_stuck_check: Duration,
 
     pub max_bootstrap_attempts: Option<usize>,
 

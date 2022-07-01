@@ -1,5 +1,6 @@
 mod connect;
 
+pub use self::connect::{connect, ConnectError, ConnectFuture, ConnectHandle};
 use super::{
     buffer_sizes,
     convert::{Decode, Encode},
@@ -7,29 +8,26 @@ use super::{
         self,
         client::{BlockSubscription, FragmentSubscription, GossipSubscription},
     },
-    p2p::{
-        comm::{OutboundSubscription, PeerComms},
-        Address,
-    },
-    subscription::{BlockAnnouncementProcessor, FragmentProcessor, GossipProcessor},
+    p2p::comm::{OutboundSubscription, PeerComms},
+    subscription::{BlockAnnouncementProcessor, Direction, FragmentProcessor, GossipProcessor},
     Channels, GlobalStateR,
 };
 use crate::{
     intercom::{self, BlockMsg, ClientMsg},
+    topology::NodeId,
     utils::async_msg::MessageBox,
 };
-use chain_network::data as net_data;
-use chain_network::data::block::{BlockEvent, BlockIds, ChainPullRequest};
-
-use futures::prelude::*;
-use futures::ready;
-use tracing::{span, Level, Span};
+use chain_network::{
+    data as net_data,
+    data::block::{BlockEvent, BlockIds, ChainPullRequest},
+};
+use futures::{prelude::*, ready};
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
+use tracing::{instrument, Span};
 use tracing_futures::Instrument;
-
-use std::pin::Pin;
-use std::task::{Context, Poll};
-
-pub use self::connect::{connect, ConnectError, ConnectFuture, ConnectHandle};
 
 #[must_use = "Client must be polled"]
 pub struct Client {
@@ -71,39 +69,19 @@ impl Client {
 
         let block_sink = BlockAnnouncementProcessor::new(
             builder.channels.block_box,
-            inbound.peer_address,
+            inbound.peer_id,
             global_state.clone(),
-            span!(
-                parent: &parent_span,
-                Level::TRACE,
-                "block_announcement_processor",
-                stream = "block_events",
-                direction = "in"
-            ),
         );
         let fragment_sink = FragmentProcessor::new(
             builder.channels.transaction_box,
-            inbound.peer_address,
+            inbound.peer_id,
             global_state.clone(),
-            span!(
-                parent: &parent_span,
-                Level::TRACE,
-                "fragment_processor",
-                stream = "fragments",
-                direction = "in"
-            ),
         );
         let gossip_sink = GossipProcessor::new(
             builder.channels.topology_box,
-            inbound.peer_address,
+            inbound.peer_id,
             global_state.clone(),
-            span!(
-                parent: &parent_span,
-                Level::TRACE,
-                "gossip_processor",
-                stream = "gossip",
-                direction = "in"
-            ),
+            Direction::Client,
         );
 
         Client {
@@ -125,7 +103,7 @@ impl Client {
 }
 
 struct InboundSubscriptions {
-    pub peer_address: Address,
+    pub peer_id: NodeId,
     pub block_events: BlockSubscription,
     pub fragments: FragmentSubscription,
     pub gossip: GossipSubscription,
@@ -172,13 +150,12 @@ impl Progress {
 }
 
 impl Client {
+    #[instrument(skip_all, level = "debug")]
     fn process_block_event(&mut self, cx: &mut Context<'_>) -> Poll<Result<ProcessingOutcome, ()>> {
         use self::ProcessingOutcome::*;
         // Drive sending of a message to block task to clear the buffered
         // announcement before polling more events from the block subscription
         // stream.
-        let span = self.span().clone();
-        let _enter = span.enter();
         let mut block_sink = Pin::new(&mut self.block_sink);
         ready!(block_sink.as_mut().poll_ready(cx))
             .map_err(|e| tracing::debug!(reason = %e, "failed getting block sink"))?;
@@ -264,15 +241,8 @@ impl Client {
         Ok(Continue).into()
     }
 
+    #[instrument(skip_all, level = "debug")]
     fn upload_blocks(&mut self, block_ids: BlockIds) -> Result<(), ()> {
-        let span = span!(
-            parent: &self.span,
-            Level::TRACE,
-            "solicitation",
-            kind = "UploadBlocks"
-        );
-        let _enter = span.enter();
-
         if block_ids.is_empty() {
             tracing::info!("peer has sent an empty block solicitation");
             return Err(());
@@ -289,7 +259,6 @@ impl Client {
             block_ids[0]
         );
         let (reply_handle, future) = intercom::stream_reply(buffer_sizes::outbound::BLOCKS);
-        let future = future.instrument(span.clone());
         debug_assert!(self.incoming_solicitation.is_none());
         self.incoming_solicitation = Some(ClientMsg::GetBlocks(block_ids, reply_handle));
         let mut client = self.inner.clone();
@@ -317,20 +286,13 @@ impl Client {
                     }
                 }
             }
-            .instrument(span.clone()),
+            .in_current_span(),
         );
         Ok(())
     }
 
+    #[instrument(skip_all, level = "debug")]
     fn push_missing_headers(&mut self, req: ChainPullRequest) -> Result<(), ()> {
-        let span = span!(
-            parent: &self.span,
-            Level::TRACE,
-            "solicitation",
-            kind = "PushHeaders"
-        );
-        let _enter = span.enter();
-
         let from = req.from.decode().map_err(|e| {
             tracing::info!(
                 reason = %e,
@@ -349,7 +311,6 @@ impl Client {
             "peer requests missing part of the chain"
         );
         let (reply_handle, future) = intercom::stream_reply(buffer_sizes::outbound::HEADERS);
-        let future = future.instrument(span.clone());
         debug_assert!(self.incoming_solicitation.is_none());
         self.incoming_solicitation = Some(ClientMsg::PullHeaders(from, to, reply_handle));
         let mut client = self.inner.clone();
@@ -377,20 +338,14 @@ impl Client {
                     }
                 }
             }
-            .instrument(span.clone()),
+            .in_current_span(),
         );
         Ok(())
     }
 
+    #[instrument(skip_all, level = "debug")]
     fn pull_headers(&mut self, req: ChainPullRequest) {
         let mut block_box = self.block_sink.message_box();
-        let span = span!(
-            parent: &self.span,
-            Level::TRACE,
-            "request",
-            kind = "PullHeaders"
-        );
-        let _enter = span.enter();
 
         let (handle, sink, _) = intercom::stream_request(buffer_sizes::inbound::HEADERS);
         // TODO: make sure that back pressure on the number of requests
@@ -406,7 +361,7 @@ impl Client {
                     );
                 }
             }
-            .instrument(span.clone()),
+            .in_current_span(),
         );
         let mut client = self.inner.clone();
         self.global_state.spawn(
@@ -430,18 +385,13 @@ impl Client {
                     }
                 }
             }
-            .instrument(span.clone()),
+            .in_current_span(),
         );
     }
 
+    #[instrument(skip_all, level = "debug")]
     fn solicit_blocks(&mut self, block_ids: BlockIds) {
         let mut block_box = self.block_sink.message_box();
-        let span = span!(
-            parent: self.span(),
-            Level::TRACE,
-            "request",
-            kind = "GetBlocks"
-        );
         let (handle, sink, _) = intercom::stream_request(buffer_sizes::inbound::BLOCKS);
         // TODO: make sure that back pressure on the number of requests
         // in flight prevents unlimited spawning of these tasks.
@@ -456,7 +406,7 @@ impl Client {
                     );
                 }
             }
-            .instrument(span.clone()),
+            .in_current_span(),
         );
         let mut client = self.inner.clone();
         self.global_state.spawn(
@@ -480,14 +430,13 @@ impl Client {
                     }
                 }
             }
-            .instrument(span),
+            .in_current_span(),
         );
     }
 
+    #[instrument(skip_all, level = "debug", fields(direction = "in"))]
     fn process_fragments(&mut self, cx: &mut Context<'_>) -> Poll<Result<ProcessingOutcome, ()>> {
         use self::ProcessingOutcome::*;
-        let span = self.span().clone();
-        let _enter = span.enter();
         let mut fragment_sink = Pin::new(&mut self.fragment_sink);
         ready!(fragment_sink.as_mut().poll_ready(cx)).map_err(|_| ())?;
 
@@ -519,10 +468,9 @@ impl Client {
         }
     }
 
+    #[instrument(skip_all, level = "debug", fields(direction = "in"))]
     fn process_gossip(&mut self, cx: &mut Context<'_>) -> Poll<Result<ProcessingOutcome, ()>> {
         use self::ProcessingOutcome::*;
-        let span = self.span().clone();
-        let _enter = span.enter();
         let mut gossip_sink = Pin::new(&mut self.gossip_sink);
         ready!(gossip_sink.as_mut().poll_ready(cx)).map_err(|_| ())?;
 
@@ -534,6 +482,7 @@ impl Client {
                 Poll::Pending
             }
             Poll::Ready(Some(Ok(gossip))) => {
+                tracing::debug!("client");
                 gossip_sink.as_mut().start_send(gossip).map_err(|_| ())?;
                 Ok(Continue).into()
             }

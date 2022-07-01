@@ -1,15 +1,17 @@
-use crate::interfaces::{
-    DEFAULT_KES_SPEED_UPDATE, MAXIMUM_KES_SPEED_UPDATE_IN_SECONDS,
-    MINIMUM_KES_SPEED_UPDATE_IN_SECONDS,
+use crate::{
+    interfaces::{
+        DEFAULT_KES_SPEED_UPDATE, MAXIMUM_KES_SPEED_UPDATE_IN_SECONDS,
+        MINIMUM_KES_SPEED_UPDATE_IN_SECONDS,
+    },
+    time::Duration,
 };
-use crate::time::Duration;
 use chain_impl_mockchain::config::ConfigParam;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{convert::TryFrom, fmt, str::FromStr as _};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-pub struct KesUpdateSpeed(pub(crate) u32);
+pub struct KesUpdateSpeed(u32);
 
 impl KesUpdateSpeed {
     /// minimal value for the KES Update Speed
@@ -35,7 +37,8 @@ impl KesUpdateSpeed {
     /// returns `None` if the value is not within the boundaries of
     /// `KesUpdateSpeed::MINIMUM` and `KesUpdateSpeed::MAXIMUM`.
     pub fn new(v: u32) -> Option<Self> {
-        if v < MINIMUM_KES_SPEED_UPDATE_IN_SECONDS || MAXIMUM_KES_SPEED_UPDATE_IN_SECONDS < v {
+        if !(MINIMUM_KES_SPEED_UPDATE_IN_SECONDS..=MAXIMUM_KES_SPEED_UPDATE_IN_SECONDS).contains(&v)
+        {
             None
         } else {
             Some(KesUpdateSpeed(v))
@@ -196,7 +199,7 @@ mod test {
         const VALUE: u32 = 2 * 24 * 3600 + 6 * 3600 + 15 * 60 + 34;
         const DURATION_STR: &str = "---\n2days 6h 15m 34s";
 
-        let decoded: KesUpdateSpeed = serde_yaml::from_str(&DURATION_STR).unwrap();
+        let decoded: KesUpdateSpeed = serde_yaml::from_str(DURATION_STR).unwrap();
 
         assert_eq!(decoded.0, VALUE)
     }

@@ -1,8 +1,7 @@
 use crate::block0;
 use chain_impl_mockchain::{
     block::Block,
-    header::BlockDate,
-    header::Header,
+    header::{BlockDate, Header},
     leadership::{self, Leadership, Verification},
     ledger::{EpochRewardsInfo, Ledger, LedgerParameters},
 };
@@ -50,7 +49,7 @@ pub enum EpochInfoError {
 
 impl EpochInfo {
     pub(crate) fn new(block0: &Block, ledger: &Ledger) -> Result<Self, EpochInfoError> {
-        let epoch = block0.header.block_date().epoch;
+        let epoch = block0.header().block_date().epoch;
         let time_frame = {
             let start_time = block0::start_time(block0)?;
             let slot_duration = block0::slot_duration(block0)?;

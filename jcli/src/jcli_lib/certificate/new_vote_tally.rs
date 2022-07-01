@@ -1,12 +1,15 @@
-use crate::jcli_lib::certificate::{write_cert, Error};
-use crate::jcli_lib::utils::vote;
+use crate::jcli_lib::{
+    certificate::{write_cert, Error},
+    utils::vote,
+};
 use chain_impl_mockchain::certificate::{
     Certificate, DecryptedPrivateTally, DecryptedPrivateTallyProposal, VotePlanId, VoteTally,
 };
-use jormungandr_lib::crypto::hash::Hash;
-use jormungandr_lib::interfaces::{PrivateTallyState, Tally};
-use std::convert::TryInto;
-use std::path::PathBuf;
+use jormungandr_lib::{
+    crypto::hash::Hash,
+    interfaces::{PrivateTallyState, Tally},
+};
+use std::{convert::TryInto, path::PathBuf};
 use structopt::StructOpt;
 
 /// create a vote tally certificate
@@ -88,24 +91,25 @@ impl PrivateTally {
             .into_iter()
             .zip(shares)
             .map(|(prop, shares)| match prop.tally {
-                Some(Tally::Private {
+                Tally::Private {
                     state: PrivateTallyState::Decrypted { result, .. },
-                }) => Ok(DecryptedPrivateTallyProposal {
+                } => Ok(DecryptedPrivateTallyProposal {
                     decrypt_shares: shares.into_boxed_slice(),
                     tally_result: result.results().into_boxed_slice(),
                 }),
                 other => {
                     let found = match other {
-                        Some(Tally::Public { .. }) => "public tally",
-                        Some(Tally::Private { .. }) => "private encrypted tally",
-                        None => "none",
+                        Tally::Public { .. } => "public tally",
+                        Tally::Private { .. } => "private encrypted tally",
                     };
                     Err(Error::PrivateTallyExpected { found })
                 }
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        let vote_tally =
-            VoteTally::new_private(vote_plan.id.into(), DecryptedPrivateTally::new(tallies));
+        let vote_tally = VoteTally::new_private(
+            vote_plan.id.into(),
+            DecryptedPrivateTally::new(tallies).map_err(Error::PrivateTallyError)?,
+        );
         let cert = Certificate::VoteTally(vote_tally);
         write_cert(self.output.as_deref(), cert.into())
     }

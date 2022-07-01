@@ -1,10 +1,11 @@
 use crate::jcli_lib::utils::io;
-use jormungandr_lib::crypto::hash::Hash;
-use jormungandr_lib::interfaces::{serde_base64_bytes, VotePlanStatus};
+use jormungandr_lib::{
+    crypto::hash::Hash,
+    interfaces::{serde_base64_bytes, VotePlanStatus},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::convert::TryFrom;
-use std::path::Path;
+use std::{convert::TryFrom, path::Path};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -70,6 +71,8 @@ pub enum SharesError {
     InsufficientShares,
     #[error("invalid binary share data")]
     InvalidBinaryShare,
+    #[error("decryption share is not valid")]
+    ValidationFailed(#[from] chain_vote::tally::DecryptionError),
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

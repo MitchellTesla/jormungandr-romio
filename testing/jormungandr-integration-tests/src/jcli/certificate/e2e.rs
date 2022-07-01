@@ -1,16 +1,13 @@
-use crate::common::{jcli::JCli, startup::create_new_key_pair};
-
-use chain_crypto::{Curve25519_2HashDh, Ed25519, SumEd25519_12};
-
-use assert_fs::prelude::*;
-use assert_fs::TempDir;
+use assert_fs::{prelude::*, TempDir};
+use chain_crypto::{Ed25519, RistrettoGroup2HashDh, SumEd25519_12};
+use jormungandr_automation::{jcli::JCli, testing::keys::create_new_key_pair};
 
 #[test]
 pub fn test_create_and_sign_new_stake_delegation() {
     let jcli: JCli = Default::default();
     let owner = create_new_key_pair::<Ed25519>();
     let kes = create_new_key_pair::<SumEd25519_12>();
-    let vrf = create_new_key_pair::<Curve25519_2HashDh>();
+    let vrf = create_new_key_pair::<RistrettoGroup2HashDh>();
 
     let certificate = jcli.certificate().new_stake_pool_registration(
         &kes.identifier().to_bech32_str(),
@@ -25,7 +22,7 @@ pub fn test_create_and_sign_new_stake_delegation() {
 
     let input_file = temp_dir.child("certificate");
     input_file.write_str(&certificate).unwrap();
-    let stake_pool_id = jcli.certificate().stake_pool_id(input_file.path());
+    let stake_pool_id = jcli.certificate().stake_pool_id(input_file.path()).unwrap();
     let certificate = jcli
         .certificate()
         .new_stake_delegation(&stake_pool_id, &owner.identifier().to_bech32_str());
@@ -76,6 +73,7 @@ proposals:
       treasury:
         transfer_to_rewards:
           value: 100
+voting_token: "00000000000000000000000000000000000000000000000000000000.00000000"
     "#;
 
     let vote_plan_config_path = temp_dir.child("vote_plan.yaml");

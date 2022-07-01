@@ -2,14 +2,15 @@ use crate::{
     blockcfg::{Block, HeaderHash},
     intercom::{self, ReplySendError, ReplyStreamHandle},
 };
-use chain_core::property::{Deserialize, Serialize};
+use chain_core::{
+    packer::Codec,
+    property::{Deserialize, ReadError, Serialize, WriteError},
+};
 use chain_storage::{BlockInfo, BlockStore, Error as StorageError};
 use futures::prelude::*;
+use std::{convert::identity, path::Path};
 use thiserror::Error;
 use tracing::Span;
-
-use std::convert::identity;
-use std::path::Path;
 
 const MINIMUM_BLOCKS_TO_FLUSH: usize = 256;
 
@@ -20,9 +21,9 @@ pub enum Error {
     #[error("database backend error")]
     BackendError(#[source] StorageError),
     #[error("deserialization error")]
-    Deserialize(#[source] std::io::Error),
+    Deserialize(#[source] ReadError),
     #[error("serialization error")]
-    Serialize(#[source] std::io::Error),
+    Serialize(#[source] WriteError),
     #[error("Block already present in DB")]
     BlockAlreadyPresent,
     #[error("the parent block is missing for the required write")]
@@ -79,7 +80,8 @@ impl Storage {
             .and_then(|maybe_block_id| {
                 maybe_block_id
                     .map(|block_id| {
-                        HeaderHash::deserialize(block_id.as_ref()).map_err(Error::Deserialize)
+                        HeaderHash::deserialize(&mut Codec::new(block_id.as_ref()))
+                            .map_err(Error::Deserialize)
                     })
                     .transpose()
             })
@@ -93,7 +95,7 @@ impl Storage {
 
     pub fn get(&self, header_hash: HeaderHash) -> Result<Option<Block>, Error> {
         match self.storage.get_block(header_hash.as_bytes()) {
-            Ok(block) => Block::deserialize(block.as_ref())
+            Ok(block) => Block::deserialize(&mut Codec::new(block.as_ref()))
                 .map(Some)
                 .map_err(Error::Deserialize),
             Err(StorageError::BlockNotFound) => Ok(None),
@@ -107,6 +109,17 @@ impl Storage {
             .map_err(Into::into)
     }
 
+    pub fn get_branches(&self) -> Result<Vec<HeaderHash>, Error> {
+        self.storage
+            .get_tips_ids()?
+            .into_iter()
+            .map(|branch| {
+                HeaderHash::deserialize(&mut Codec::new(branch.as_ref()))
+                    .map_err(Error::Deserialize)
+            })
+            .collect::<Result<Vec<_>, Error>>()
+    }
+
     pub fn get_blocks_by_chain_length(&self, chain_length: u32) -> Result<Vec<Block>, Error> {
         self.storage
             .get_blocks_by_chain_length(chain_length)
@@ -114,24 +127,47 @@ impl Storage {
             .and_then(|blocks| {
                 blocks
                     .into_iter()
-                    .map(|block| Block::deserialize(block.as_ref()))
+                    .map(|block| Block::deserialize(&mut Codec::new(block.as_ref())))
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(Error::Deserialize)
             })
     }
 
+    pub fn get_nth_ancestor(
+        &self,
+        header_hash: HeaderHash,
+        distance: u32,
+    ) -> Result<Option<Block>, Error> {
+        match self
+            .storage
+            .get_nth_ancestor(header_hash.as_bytes(), distance)
+        {
+            Ok(block) => {
+                let block = self
+                    .storage
+                    .get_block(block.id().as_ref())
+                    .expect("already found this block, it must exists inside the storage");
+                Block::deserialize(&mut Codec::new(block.as_ref()))
+                    .map(Some)
+                    .map_err(Error::Deserialize)
+            }
+            Err(StorageError::BlockNotFound) => Ok(None),
+            Err(e) => Err(Error::BackendError(e)),
+        }
+    }
+
     pub fn put_block(&self, block: &Block) -> Result<(), Error> {
         let id = block
-            .header
+            .header()
             .hash()
             .serialize_as_vec()
             .map_err(Error::Serialize)?;
         let parent_id = block
-            .header
+            .header()
             .block_parent_hash()
             .serialize_as_vec()
             .map_err(Error::Serialize)?;
-        let chain_length = block.header.chain_length().into();
+        let chain_length = block.header().chain_length().into();
         let block_info = BlockInfo::new(id, parent_id, chain_length);
         self.storage
             .put_block(
@@ -139,6 +175,33 @@ impl Storage {
                 block_info,
             )
             .map_err(Into::into)
+    }
+
+    pub fn get_parent(&self, header_hash: HeaderHash) -> Result<Option<HeaderHash>, Error> {
+        let block_info = match self.storage.get_block_info(header_hash.as_ref()) {
+            Ok(block_info) => block_info,
+            Err(_) => return Ok(None),
+        };
+
+        HeaderHash::deserialize(&mut Codec::new(block_info.parent_id().as_ref()))
+            .map_err(Error::Deserialize)
+            .map(Some)
+    }
+
+    pub fn is_ancestor(&self, a: HeaderHash, b: HeaderHash) -> bool {
+        self.storage
+            .is_ancestor(a.as_ref(), b.as_ref())
+            .map(|x| x.is_some())
+            .unwrap_or(false)
+    }
+
+    pub fn get_chain_length(&self, block_id: HeaderHash) -> Option<u32> {
+        let block_info = match self.storage.get_block_info(block_id.as_ref()) {
+            Ok(block_info) => block_info,
+            Err(_) => return None,
+        };
+
+        Some(block_info.chain_length())
     }
 
     /// Return values:
@@ -159,7 +222,7 @@ impl Storage {
         let stream = futures::stream::iter(self.storage.iter(to.as_bytes(), distance)?)
             .map_err(Into::into)
             .and_then(|raw_block| async move {
-                Block::deserialize(raw_block.as_ref()).map_err(Error::Deserialize)
+                Block::deserialize(&mut Codec::new(raw_block.as_ref())).map_err(Error::Deserialize)
             })
             .map_err(Into::into);
 
@@ -209,7 +272,8 @@ impl Storage {
         let mut stream = futures::stream::iter(iter)
             .map(|raw_block_result| {
                 raw_block_result.map_err(Into::into).and_then(|raw_block| {
-                    Block::deserialize(raw_block.as_ref()).map_err(Error::Deserialize)
+                    Block::deserialize(&mut Codec::new(raw_block.as_ref()))
+                        .map_err(Error::Deserialize)
                 })
             })
             .map_ok(transform)
@@ -260,6 +324,22 @@ impl Storage {
             header_hash,
             distance: closest_found,
         }))
+    }
+
+    pub fn find_common_ancestor(
+        &self,
+        tip_1: HeaderHash,
+        tip_2: HeaderHash,
+    ) -> Result<HeaderHash, Error> {
+        HeaderHash::deserialize(&mut Codec::new(
+            self.storage
+                .find_lowest_common_ancestor(tip_1.as_ref(), tip_2.as_ref())?
+                // No common ancestor means that we accepted blocks originating from two different block0
+                .unwrap()
+                .id()
+                .as_ref(),
+        ))
+        .map_err(Error::Deserialize)
     }
 
     pub fn gc(&self, threshold_depth: u32, main_branch_tip: &[u8]) -> Result<(), Error> {

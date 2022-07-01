@@ -1,4 +1,4 @@
-use chain_crypto::{Blake2b256, Curve25519_2HashDh, Ed25519, PublicKey, SumEd25519_12};
+use chain_crypto::{Blake2b256, Ed25519, PublicKey, RistrettoGroup2HashDh, SumEd25519_12};
 use chain_impl_mockchain::leadership::{BftLeader, GenesisLeader};
 use jormungandr_lib::crypto::{
     hash::Hash,
@@ -22,32 +22,19 @@ pub struct Bft {
 pub struct GenesisPraos {
     node_id: Hash,
     sig_key: SigningKey<SumEd25519_12>,
-    vrf_key: SigningKey<Curve25519_2HashDh>,
-}
-
-/// the genesis praos setting
-///
-#[derive(Clone, Deserialize)]
-pub struct GenesisPraosPublic {
-    sig_key: Identifier<SumEd25519_12>,
-    vrf_key: Identifier<Curve25519_2HashDh>,
+    vrf_key: SigningKey<RistrettoGroup2HashDh>,
 }
 
 #[derive(Clone, Deserialize)]
 pub struct OwnerKey(Identifier<Ed25519>);
 
-#[derive(Clone, Deserialize)]
-pub struct StakePoolInfo {
-    serial: u128,
-    owners: Vec<OwnerKey>,
-    initial_key: GenesisPraosPublic,
-}
-
 /// Node Secret(s)
 #[derive(Clone, Deserialize)]
 pub struct NodeSecret {
-    pub bft: Option<Bft>,
-    pub genesis: Option<GenesisPraos>,
+    bft: Option<Bft>,
+    genesis: Option<GenesisPraos>,
+    #[cfg(feature = "evm")]
+    evm_keys: Vec<chain_evm::ethereum_types::H256>,
 }
 
 /// Node Secret's Public parts
@@ -82,5 +69,13 @@ impl NodeSecret {
             sig_key: genesis.sig_key.into_secret_key(),
             vrf_key: genesis.vrf_key.into_secret_key(),
         })
+    }
+
+    #[cfg(feature = "evm")]
+    pub fn evm_keys(&self) -> Vec<chain_evm::util::Secret> {
+        self.evm_keys
+            .iter()
+            .map(chain_evm::util::Secret::from_hash)
+            .collect()
     }
 }

@@ -1,14 +1,14 @@
 mod error;
 
-use tracing::{span, Level};
-
 pub use self::error::{Error, ErrorKind};
 use crate::{
     blockcfg::{Block, HeaderId},
-    blockchain::{Blockchain, ErrorKind as BlockchainError, Storage, Tip},
+    blockchain::{Blockchain, Error as BlockchainError, Storage, Tip},
     network,
     settings::start::Settings,
 };
+use chain_core::packer::Codec;
+use tracing::{span, Level};
 
 /// prepare the block storage from the given settings
 pub fn prepare_storage(setting: &Settings) -> Result<Storage, Error> {
@@ -51,9 +51,9 @@ async fn fetch_block0_http(base_services: &[String], block0_id: &HeaderId) -> Op
             .bytes()
             .await
             .map_err(|e| format!("cannot get data {}", e))?;
-        let block = Block::deserialize(bytes.as_ref())
+        let block = Block::deserialize(&mut Codec::new(bytes.as_ref()))
             .map_err(|err| format!("parse error on data {}", err))?;
-        let got = block.header.id();
+        let got = block.header().id();
         if &got != block0_id {
             return Err(format!("invalid block expecting {} got {}", block0_id, got));
         }
@@ -62,7 +62,7 @@ async fn fetch_block0_http(base_services: &[String], block0_id: &HeaderId) -> Op
 
     for base_url in base_services {
         // trying to fetch from service base url
-        let url = format!("{}/{}.block0", base_url, block0_id.to_string());
+        let url = format!("{}/{}.block0", base_url, block0_id);
         match fetch_one(block0_id, &url).await {
             Err(e) => {
                 tracing::debug!("HTTP fetch : fail to get from {} : error {}", base_url, e);
@@ -100,16 +100,17 @@ pub async fn prepare_block_0(settings: &Settings, storage: &Storage) -> Result<B
                 reason: ErrorKind::Block0,
             })?;
             let reader = std::io::BufReader::new(f);
-            let block = Block::deserialize(reader).map_err(|err| Error::ParseError {
-                source: err,
-                reason: ErrorKind::Block0,
-            })?;
+            let block =
+                Block::deserialize(&mut Codec::new(reader)).map_err(|err| Error::ParseError {
+                    source: err,
+                    reason: ErrorKind::Block0,
+                })?;
 
             // check if the block0 match, the optional expected hash value
             match opt_block0_id {
                 None => {}
                 Some(expected_hash) => {
-                    let got = block.header.id();
+                    let got = block.header().id();
                     if &got != expected_hash {
                         return Err(Error::Block0Mismatch {
                             got,
@@ -153,20 +154,20 @@ pub async fn load_blockchain(
     rewards_report_all: bool,
 ) -> Result<(Blockchain, Tip), Error> {
     let blockchain = Blockchain::new(
-        block0.header.hash(),
+        block0.header().hash(),
         storage,
         cache_capacity,
         rewards_report_all,
     );
 
-    let main_branch = match blockchain.load_from_block0(block0.clone()).await {
-        Err(error) => match error.kind() {
+    let tip = match blockchain.load_from_block0(block0.clone()).await {
+        Err(error) => match error {
             BlockchainError::Block0AlreadyInStorage => blockchain.load_from_storage(block0).await,
-            _ => Err(error),
+            error => Err(error),
         },
         Ok(branch) => Ok(branch),
-    }?;
-    let tip = Tip::new(main_branch);
+    }
+    .map_err(Box::new)?;
     let tip_ref = tip.get_ref().await;
     tracing::info!(
         "Loaded from storage tip is : {}",

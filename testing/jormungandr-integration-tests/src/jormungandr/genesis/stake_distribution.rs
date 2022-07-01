@@ -1,20 +1,20 @@
-use crate::common::{
-    jcli::JCli, jormungandr::ConfigurationBuilder, startup, transaction_utils::TransactionHash,
-};
-use chain_impl_mockchain::fee::LinearFee;
+use crate::startup;
+use chain_impl_mockchain::{block::BlockDate, fee::LinearFee};
+use jormungandr_automation::{jcli::JCli, jormungandr::ConfigurationBuilder, testing::time};
 use jormungandr_lib::{
     crypto::{account::Identifier as AccountIdentifier, hash::Hash},
     interfaces::{ActiveSlotCoefficient, Stake, StakeDistributionDto},
 };
 use std::str::FromStr;
+use thor::TransactionHash;
 
 #[test]
 pub fn stake_distribution() {
     let jcli: JCli = Default::default();
-    let mut sender = startup::create_new_account_address();
-    let receiver = startup::create_new_account_address();
+    let sender = thor::Wallet::default();
+    let receiver = thor::Wallet::default();
 
-    let stake_pool_owner_1 = startup::create_new_account_address();
+    let stake_pool_owner_1 = thor::Wallet::default();
     let fee = LinearFee::new(1, 1, 1);
     let (jormungandr, stake_pools) = startup::start_stake_pool(
         &[stake_pool_owner_1.clone()],
@@ -23,7 +23,7 @@ pub fn stake_distribution() {
             .with_slots_per_epoch(20)
             .with_consensus_genesis_praos_active_slot_coeff(ActiveSlotCoefficient::MAXIMUM)
             .with_rewards_history()
-            .with_linear_fees(fee.clone())
+            .with_linear_fees(fee)
             .with_total_rewards_supply(1_000_000.into())
             .with_slot_duration(3),
     )
@@ -46,39 +46,41 @@ pub fn stake_distribution() {
         jormungandr.rest().stake_distribution().unwrap(),
     );
 
-    let transaction = sender
-        .transaction_to(
-            &jormungandr.genesis_block_hash(),
-            &jormungandr.fees(),
-            stake_pool_owner_1.address(),
-            transaction_amount.into(),
-        )
-        .unwrap()
-        .encode();
+    let transaction = thor::FragmentBuilder::new(
+        &jormungandr.genesis_block_hash(),
+        &jormungandr.fees(),
+        BlockDate::first().next_epoch(),
+    )
+    .transaction(
+        &sender,
+        stake_pool_owner_1.address(),
+        transaction_amount.into(),
+    )
+    .unwrap()
+    .encode();
 
     jcli.fragment_sender(&jormungandr)
         .send(&transaction)
         .assert_in_block();
 
-    startup::sleep_till_next_epoch(10, jormungandr.block0_configuration());
+    time::wait_for_epoch(2, jormungandr.rest());
 
     let identifier: AccountIdentifier = stake_pool_owner_1.identifier().into();
-    let reward: u64 = jormungandr
+    let reward: u64 = (*jormungandr
         .rest()
         .epoch_reward_history(1)
         .unwrap()
         .accounts()
         .get(&identifier)
-        .unwrap()
-        .clone()
-        .into();
+        .unwrap())
+    .into();
 
     jcli.rest().v0().account_stats(
         stake_pool_owner_1.address().to_string(),
         jormungandr.rest_uri(),
     );
 
-    startup::sleep_till_epoch(3, 10, &jormungandr.block0_configuration());
+    time::wait_for_epoch(3, jormungandr.rest());
 
     jcli.rest().v0().account_stats(
         stake_pool_owner_1.address().to_string(),
@@ -96,7 +98,7 @@ pub fn stake_distribution() {
     );
 }
 
-pub fn assert_distribution(
+fn assert_distribution(
     unassigned: u64,
     dangling: u64,
     pool_stake: (Hash, u64),

@@ -1,30 +1,32 @@
-use crate::common::{
-    jcli::JCli, jormungandr::ConfigurationBuilder, startup, transaction_utils::TransactionHash,
+use crate::startup;
+use chain_impl_mockchain::block::BlockDate;
+use jormungandr_automation::{
+    jcli::JCli,
+    jormungandr::ConfigurationBuilder,
+    testing::{benchmark_consumption, benchmark_endurance, ResourcesUsage},
 };
 use jormungandr_lib::interfaces::ActiveSlotCoefficient;
-use jormungandr_testing_utils::testing::{
-    benchmark_consumption, benchmark_endurance, ResourcesUsage,
-};
 use jortestkit::process as process_utils;
 use std::time::Duration;
+use thor::TransactionHash;
 
 #[test]
 pub fn collect_reward_for_15_minutes() {
     let jcli: JCli = Default::default();
     let duration_48_hours = Duration::from_secs(900);
 
-    let mut sender = startup::create_new_account_address();
-    let receiver = startup::create_new_account_address();
+    let mut sender = thor::Wallet::default();
+    let receiver = thor::Wallet::default();
 
     let stake_pool_owners = [
         sender.clone(),
         receiver.clone(),
-        startup::create_new_account_address(),
-        startup::create_new_account_address(),
-        startup::create_new_account_address(),
-        startup::create_new_account_address(),
-        startup::create_new_account_address(),
-        startup::create_new_account_address(),
+        thor::Wallet::default(),
+        thor::Wallet::default(),
+        thor::Wallet::default(),
+        thor::Wallet::default(),
+        thor::Wallet::default(),
+        thor::Wallet::default(),
     ];
     let (jormungandr, _stake_pool_ids) = startup::start_stake_pool(
         &stake_pool_owners,
@@ -37,7 +39,7 @@ pub fn collect_reward_for_15_minutes() {
     .unwrap();
 
     let benchmark_endurance = benchmark_endurance("collect_reward_for_15_minutes")
-        .target(duration_48_hours.clone())
+        .target(duration_48_hours)
         .start();
 
     let mut benchmark_consumption =
@@ -47,15 +49,14 @@ pub fn collect_reward_for_15_minutes() {
             .start();
 
     loop {
-        let new_transaction = sender
-            .transaction_to(
-                &jormungandr.genesis_block_hash(),
-                &jormungandr.fees(),
-                receiver.address(),
-                10.into(),
-            )
-            .unwrap()
-            .encode();
+        let new_transaction = thor::FragmentBuilder::new(
+            &jormungandr.genesis_block_hash(),
+            &jormungandr.fees(),
+            BlockDate::first().next_epoch(),
+        )
+        .transaction(&sender, receiver.address(), 10.into())
+        .unwrap()
+        .encode();
 
         jcli.rest()
             .v0()
@@ -75,7 +76,7 @@ pub fn collect_reward_for_15_minutes() {
             let message = format!("{}", err);
             benchmark_endurance.exception(message.clone()).print();
             benchmark_consumption.exception(message.clone()).print();
-            panic!(message);
+            std::panic::panic_any(message);
         }
 
         benchmark_consumption.snapshot().unwrap();

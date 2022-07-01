@@ -102,7 +102,7 @@ Use the CA certificate with `jcli`.
     typical settings for a non mining node: `"normal"`. For a stakepool: `"high"`.
 - `max_connections`: the maximum number of P2P connections this node should
     maintain. If not specified, an internal limit is used by default `[default: 256]`
-- `max_inbound_connections`: the maximum number of client P2P connections this
+- `max_client_connections`: the maximum number of client P2P connections this
     node should keep open. `[default: 192]`
 - `policy`: (optional) set the setting for the policy module
   - `quarantine_duration` set the time to leave a node in quarantine before allowing
@@ -112,15 +112,14 @@ Use the CA certificate with `jcli`.
     It should be a list of valid addresses, for example: `["/ip4/127.0.0.1/tcp/3000"]`.
     By default this list is empty, `[default: []]`.
 - `layers`: (optional) set the settings for some of the poldercast custom layers (see below)
-- `max_unreachable_nodes_to_connect_per_event`: (optional) set the maximum number of unreachable nodes
-  to contact at a time for every new notification.
-  Every time a new propagation event is triggered, the node will select
-  randomly a certain amount of unreachable nodes to connect to in addition
-  to the one selected by other p2p topology layer `[default: 20]`
 - `gossip_interval`: (optional) interval to start gossiping with new nodes,
   changing the value will affect the bandwidth. The more often the node will
   gossip the more bandwidth the node will need. The less often the node gossips
   the less good the resilience to node churn. `[default: 10s]`
+- `network-stuck_check`: (optional) If no gossip has been received in the last interval,
+  try to connect to nodes that were previously known to this node.
+  This helps to rejoin the protocol in case there is a network outage and the node cannot reach
+  any other peer. `[default: 5min]`
 - `max_bootstrap_attempts`: (optional) number of times to retry bootstrapping from trusted peers.
   If not set, default behavior, the bootstrap process will keep retrying indefinitely, until completed successfully.
   If set to *0* (zero), the node will skip bootstrap all together -- *even if trusted peers are defined*.
@@ -143,7 +142,7 @@ the preferred list or the bottle in the sea.
 
 #### Preferred list
 
-this is a special list that allows to connect multiple nodes together without relying
+This is a special list that allows to connect multiple nodes together without relying
 on the auto peer discovery. All entries in the preferred list are also whitelisted
 automatically, so they cannot be quarantined.
 
@@ -151,8 +150,8 @@ automatically, so they cannot be quarantined.
 
 - `view_max`: this is the number of entries to show in the view each round
   the layer will **randomly** select up to `view_max` entries from the whole
-  preferred_list.peers list of entries. [default: 20]
-- `peers`: the list of peers to keep in the preferred list [default: EMPTY]
+  preferred_list.peers list of entries. \[default: 20\]
+- `peers`: the list of peers to keep in the preferred list \[default: EMPTY\]
 
 Also, the preferred list will never be quarantined or blacklisted, the node will
 attempt to connect to (up to `view_max` of) these nodes every time, even if some
@@ -182,24 +181,24 @@ You can generate a public id with **openssl**, for example: `openssl rand -hex 2
 
 ### `topics_of_interest`
 
-This is optional an optional value to set. The default is:
+This is an optional value to set. The default is:
 
 ```yaml
 messages: low
 blocks: normal
 ```
 
-These value makes sense for most of the users that are not running stake pools or
+These values make sense for most of the users that are not running stake pools or
 that are not even publicly reachable.
 
-However for a publicly reachable node, the recommended setting would be:
+However for a publicly reachable node, the recommended settings would be:
 
 ```yaml
 messages: normal
 blocks: normal
 ```
 
-and for a stake pool
+and for a stake pool:
 
 ```yaml
 messages: high

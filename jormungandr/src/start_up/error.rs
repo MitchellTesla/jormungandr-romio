@@ -2,9 +2,10 @@ use crate::{
     blockcfg, blockchain,
     blockchain::StorageError,
     diagnostic::DiagnosticError,
-    explorer, network, secure,
+    network, secure,
     settings::{self, logging},
 };
+use chain_core::property::ReadError;
 use std::io;
 use thiserror::Error;
 
@@ -31,7 +32,7 @@ pub enum Error {
     #[error("Parsing error on {reason}")]
     ParseError {
         #[source]
-        source: io::Error,
+        source: ReadError,
         reason: ErrorKind,
     },
     #[error("Block 0 mismatch. expecting hash: {expected} but got : {got}")]
@@ -42,7 +43,7 @@ pub enum Error {
     #[error("Storage error")]
     StorageError(#[from] StorageError),
     #[error("Error while loading the legacy blockchain state")]
-    Blockchain(#[from] blockchain::Error),
+    Blockchain(#[from] Box<blockchain::Error>),
     #[error("Error in the genesis-block")]
     Block0(#[from] blockcfg::Block0Error),
     #[error("Error fetching the genesis block from the network")]
@@ -53,8 +54,6 @@ pub enum Error {
     NodeSecrets(#[from] secure::NodeSecretFromFileError),
     #[error("Block 0 is set to start in the future")]
     Block0InFuture,
-    #[error("Error while loading the explorer from storage")]
-    ExplorerBootstrapError(#[from] explorer::error::ExplorerError),
     #[error("A service has terminated with an error")]
     ServiceTerminatedWithError(#[from] crate::utils::task::ServiceError),
     #[error("Unable to get system limits: {0}")]
@@ -89,7 +88,6 @@ impl Error {
             Error::NodeSecrets { .. } => 8,
             Error::FetchBlock0 { .. } => 9,
             Error::NetworkBootstrapError { .. } => 10,
-            Error::ExplorerBootstrapError { .. } => 11,
             Error::ServiceTerminatedWithError { .. } => 12,
             Error::DiagnosticError { .. } => 13,
         }

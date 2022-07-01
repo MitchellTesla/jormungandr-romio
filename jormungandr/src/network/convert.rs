@@ -1,22 +1,26 @@
-use crate::blockcfg::{Block, Fragment, Header, HeaderId};
-use crate::intercom;
-use crate::topology::{Gossip, Gossips};
-use chain_core::mempack::{ReadBuf, Readable};
-use chain_core::property::{Deserialize, Serialize};
-use chain_network::data as net_data;
-use chain_network::error::{Code, Error};
-
+use crate::{
+    blockcfg::{Block, Fragment, Header, HeaderId},
+    intercom,
+    topology::{Gossip, Gossips, NodeId},
+};
+use chain_core::{
+    packer::Codec,
+    property::{DeserializeFromSlice, Serialize},
+};
+use chain_network::{
+    data as net_data,
+    error::{Code, Error},
+};
 use futures::stream::{self, TryStreamExt};
-
 use std::convert::TryFrom;
 
 fn read<T, U>(src: &T) -> Result<U, Error>
 where
     T: AsRef<[u8]>,
-    U: Readable,
+    U: DeserializeFromSlice,
 {
-    let mut buf = ReadBuf::from(src.as_ref());
-    U::read(&mut buf).map_err(|e| Error::new(Code::InvalidArgument, e))
+    U::deserialize_from_slice(&mut Codec::new(src.as_ref()))
+        .map_err(|e| Error::new(Code::InvalidArgument, e))
 }
 
 /// Conversion from a chain-network byte container data type
@@ -83,14 +87,23 @@ impl Decode for net_data::Fragment {
     type Object = Fragment;
 
     fn decode(self) -> Result<Self::Object, Error> {
-        Fragment::deserialize(self.as_bytes()).map_err(|e| Error::new(Code::InvalidArgument, e))
+        Fragment::deserialize_from_slice(&mut Codec::new(self.as_bytes()))
+            .map_err(|e| Error::new(Code::InvalidArgument, e))
     }
 }
 
 impl Decode for net_data::gossip::Node {
     type Object = Gossip;
     fn decode(self) -> Result<Self::Object, Error> {
-        Gossip::deserialize(self.as_bytes()).map_err(|e| Error::new(Code::InvalidArgument, e))
+        Gossip::deserialize_from_slice(&mut Codec::new(self.as_bytes()))
+            .map_err(|e| Error::new(Code::InvalidArgument, e))
+    }
+}
+
+impl Decode for net_data::NodeId {
+    type Object = NodeId;
+    fn decode(self) -> Result<Self::Object, Error> {
+        NodeId::try_from(self.as_bytes()).map_err(|e| Error::new(Code::InvalidArgument, e))
     }
 }
 
@@ -125,7 +138,7 @@ impl Encode for Header {
     type NetworkData = net_data::Header;
 
     fn encode(&self) -> Self::NetworkData {
-        net_data::Header::from_bytes(self.to_raw())
+        net_data::Header::from_bytes(self.serialize_as_vec().unwrap())
     }
 }
 
@@ -154,9 +167,17 @@ impl Encode for Gossips {
         let nodes = self
             .0
             .iter()
-            .map(|node| Gossip::encode(node))
+            .map(Gossip::encode)
             .collect::<Vec<net_data::gossip::Node>>()
             .into_boxed_slice();
         net_data::gossip::Gossip { nodes }
+    }
+}
+
+impl Encode for NodeId {
+    type NetworkData = net_data::NodeId;
+
+    fn encode(&self) -> Self::NetworkData {
+        net_data::NodeId::try_from(self.as_ref().as_ref()).unwrap()
     }
 }

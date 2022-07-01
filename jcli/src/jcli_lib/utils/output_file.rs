@@ -1,9 +1,6 @@
 use crate::jcli_lib::utils::io;
-
+use std::{io::Write, path::PathBuf};
 use structopt::StructOpt;
-
-use std::io::Write;
-use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -20,6 +17,14 @@ pub struct OutputFile {
     /// output the key to the given file or to stdout if not provided
     #[structopt(name = "OUTPUT_FILE")]
     output: Option<PathBuf>,
+}
+
+impl From<PathBuf> for OutputFile {
+    fn from(output: PathBuf) -> Self {
+        Self {
+            output: Some(output),
+        }
+    }
 }
 
 impl OutputFile {

@@ -1,15 +1,19 @@
-use chain_impl_mockchain::chaintypes::ConsensusVersion;
-use jormungandr_lib::interfaces::TrustedPeer;
-use jormungandr_testing_utils::testing::{node::grpc::JormungandrClient, SyncNode};
-
-use crate::common::{
-    configuration::JormungandrParams,
-    jormungandr::{ConfigurationBuilder, JormungandrProcess, Starter},
-};
 use assert_fs::TempDir;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::time::Duration;
-const DEFAULT_SLOT_DURATION: u8 = 1;
+use chain_impl_mockchain::chaintypes::ConsensusVersion;
+use jormungandr_automation::{
+    jormungandr::{
+        get_available_port,
+        grpc::{client::JormungandrWatchClient, JormungandrClient},
+        ConfigurationBuilder, JormungandrParams, JormungandrProcess, Starter,
+    },
+    testing::SyncNode,
+};
+use jormungandr_lib::interfaces::TrustedPeer;
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    time::Duration,
+};
+const DEFAULT_SLOT_DURATION: u8 = 2;
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 pub struct Config {
     addr: SocketAddr,
@@ -23,14 +27,20 @@ impl Config {
     }
 
     pub fn client(&self) -> JormungandrClient {
-        JormungandrClient::new(self.addr.clone())
+        JormungandrClient::new(self.addr)
+    }
+
+    pub fn watch_client(&self) -> JormungandrWatchClient {
+        JormungandrWatchClient::new(self.addr)
     }
 }
 
 pub mod client {
     use super::*;
+    use jormungandr_automation::jormungandr::grpc::client::JormungandrWatchClient;
     pub struct ClientBootstrap {
         pub client: JormungandrClient,
+        pub watch_client: JormungandrWatchClient,
         pub server: JormungandrProcess,
         pub config: JormungandrParams,
     }
@@ -49,21 +59,22 @@ pub mod client {
         let server = Starter::new()
             .temp_dir(dir)
             .config(config.clone())
-            .start_async()
+            .start()
             .unwrap();
-        std::thread::sleep(Duration::from_secs(4));
-        let client = Config::attach_to_local_node(config.get_p2p_listen_port()).client();
+        let attached_config = Config::attach_to_local_node(config.get_p2p_listen_port());
+        let client = attached_config.client();
+        let watch_client = attached_config.watch_client();
         ClientBootstrap {
             client,
             server,
             config,
+            watch_client,
         }
     }
 }
 
 pub mod server {
     use super::*;
-    use crate::common::configuration;
     const SERVER_RETRY_WAIT: Duration = Duration::from_secs(1);
     const TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -75,7 +86,7 @@ pub mod server {
 
     pub fn default() -> ServerBootstrap {
         bootstrap(
-            configuration::get_available_port(),
+            get_available_port(),
             ConfigurationBuilder::new()
                 .with_slot_duration(DEFAULT_SLOT_DURATION)
                 .with_block0_consensus(ConsensusVersion::GenesisPraos)

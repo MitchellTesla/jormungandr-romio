@@ -1,8 +1,10 @@
 mod config;
-mod v0;
+pub mod v0;
+pub mod v1;
 
 use crate::jcli_lib::utils::{io::ReadYamlError, output_format};
-use config::RestArgs;
+use chain_core::property::{ReadError, WriteError};
+pub use config::RestArgs;
 use hex::FromHexError;
 use structopt::StructOpt;
 use thiserror::Error;
@@ -13,12 +15,16 @@ use thiserror::Error;
 pub enum Rest {
     /// API version 0
     V0(v0::V0),
+    /// API version 1
+    V1(v1::V1),
 }
 
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("input is not a valid fragment")]
-    InputFragmentMalformed(#[source] std::io::Error),
+    InputFragmentMalformed(#[from] ReadError),
+    #[error("output is not a valid fragment")]
+    OutputFragmentMalformed(#[from] WriteError),
     #[error("formatting output failed")]
     OutputFormatFailed(#[from] output_format::Error),
     #[error("could not read input file")]
@@ -29,6 +35,8 @@ pub enum Error {
     InputHexMalformed(#[from] FromHexError),
     #[error("error when trying to perform an HTTP request")]
     RequestError(#[from] config::Error),
+    #[error("error loading data from response")]
+    SerdeError(#[from] serde_json::Error),
 }
 
 impl From<ReadYamlError> for Error {
@@ -44,6 +52,7 @@ impl Rest {
     pub fn exec(self) -> Result<(), Error> {
         match self {
             Rest::V0(v0) => v0.exec(),
+            Rest::V1(v1) => v1.exec(),
         }
     }
 }

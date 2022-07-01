@@ -62,6 +62,14 @@ jobs:
     needs: cache_info
     runs-on: ubuntu-latest
     steps:
+      # This is only needed because a crate manifest uses edition2021
+      # that has been stabilized in a very recent Rust release.
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          default: true
+
       - name: Cache cargo registry index
         uses: actions/cache@v2
         with:
@@ -118,11 +126,22 @@ jobs:
           esac
           echo "JORMUNGANDR_FEATURES=$features" >> $GITHUB_ENV
 
+          if [ '${{ matrix.profile }}' == debug ] && [ '${{ matrix.os }}' == windows-latest ]; then
+            echo "RUSTFLAGS=$RUSTFLAGS -C link-args=/STACK:2000000" >> $GITHUB_ENV
+          fi
+
           mkdir .cargo
           cat > .cargo/config.toml <<EOF
           [profile.release]
           lto = "thin"
           EOF
+
+      - name: Allow long paths on Windows
+        if: ${{ matrix.os == 'windows-latest' }}
+        shell: powershell
+        run: |
+          reg add HKLM\SYSTEM\CurrentControlSet\Control\FileSystem /v LongPathsEnabled /t REG_DWORD /d 1 /f
+          git config --system core.longpaths true
 
       - uses: actions-rs/toolchain@v1
         with:
@@ -174,21 +193,35 @@ jobs:
         timeout-minutes: 30
         with:
           command: build
-          args: --tests ${{ env.CARGO_FLAGS }}
+          args: --tests --all-features ${{ env.CARGO_FLAGS }}
 
-      - name: Build scenario tests
+      - name: Build explorer
         uses: actions-rs/cargo@v1
         timeout-minutes: 30
         with:
           command: build
-          args: -p jormungandr-scenario-tests ${{ env.CARGO_FLAGS }}
+          args: -p explorer ${{ env.CARGO_FLAGS }}
 
       - name: Run tests
         uses: actions-rs/cargo@v1
-        timeout-minutes: 30
+        timeout-minutes: 90
         with:
           command: test
           args: --tests ${{ env.CARGO_FLAGS }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # TMPDIR and TMP are used respectively on unix and windows
+          TMPDIR: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+
+      - name: Run network tests
+        # Network tests are a bit flaky when run on debug builds
+        if: ${{ matrix.profile == 'release' }}
+        uses: actions-rs/cargo@v1
+        timeout-minutes: 90
+        with:
+          command: test
+          args: --tests ${{ env.CARGO_FLAGS }} --features network
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # TMPDIR and TMP are used respectively on unix and windows
@@ -203,8 +236,8 @@ jobs:
           path: ${{ runner.temp }}/jormungandr_*
           retention-days: 30
 
-  lints:
-    name: Lints
+  clippy:
+    name: Clippy
     needs: [cache_info, update_deps]
     runs-on: ubuntu-latest
     steps:
@@ -214,16 +247,10 @@ jobs:
           profile: minimal
           override: true
           default: true
-          components: rustfmt, clippy
+          components: clippy
 
       - name: Checkout code
         uses: actions/checkout@v2
-
-      - name: rustfmt
-        uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: -- --check
 
       - name: Restore cargo registry index
         uses: actions/cache@v2
@@ -243,4 +270,71 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: clippy
-          args: -- -D warnings
+          args: --all-features --all-targets -- -D warnings
+
+  fmt:
+    name: Fmt
+    needs: [cache_info, update_deps]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          profile: minimal
+          override: true
+          default: true
+          components: rustfmt
+
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: rustfmt
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: -- --check
+
+  test_coverage:
+    name: Test Coverage
+    needs: update_deps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Restore cargo registry index
+        uses: actions/cache@v2
+        with:
+          path: ~/.cargo/registry/index
+          key: cargo-index-v2-${{ needs.update_deps.outputs.crates-io-index-head }}
+
+      - name: Restore dependency crates
+        uses: actions/cache@v2
+        with:
+          path: ~/.cargo/registry/cache
+          key: cargo-deps-v2-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build jormungandr
+        uses: actions-rs/cargo@v1
+        timeout-minutes: 30
+        with:
+          command: build
+          args: --release --all
+
+      - name: Run cargo-tarpaulin
+        uses: actions-rs/tarpaulin@v0.1
+        with:
+          args: '--ignore-tests --out Lcov --features network --release --skip-clean --exclude-files testing'
+          timeout: 3600
+
+      - name: upload to Coveralls
+        uses: coverallsapp/github-action@master
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path-to-lcov: './lcov.info'

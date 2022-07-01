@@ -1,5 +1,5 @@
 use crate::rest::{v1::logic, ContextLock};
-use jormungandr_lib::interfaces::FragmentsBatch;
+use jormungandr_lib::interfaces::{FragmentsBatch, VotePlanId};
 use warp::{reject::Reject, Rejection, Reply};
 
 impl Reject for logic::Error {}
@@ -35,6 +35,39 @@ pub async fn get_fragment_statuses(
 pub async fn get_fragment_logs(context: ContextLock) -> Result<impl Reply, Rejection> {
     let context = context.read().await;
     logic::get_fragment_logs(&context)
+        .await
+        .map_err(warp::reject::custom)
+        .map(|r| warp::reply::json(&r))
+}
+
+pub async fn get_account_votes_with_plan(
+    vote_plan_id: VotePlanId,
+    account_id_hex: String,
+    context: ContextLock,
+) -> Result<impl Reply, Rejection> {
+    let context = context.read().await;
+    logic::get_account_votes_with_plan(&context, vote_plan_id, account_id_hex)
+        .await
+        .map_err(warp::reject::custom)?
+        .ok_or_else(warp::reject::not_found)
+        .map(|r| warp::reply::json(&r))
+}
+
+pub async fn get_account_votes(
+    account_id_hex: String,
+    context: ContextLock,
+) -> Result<impl Reply, Rejection> {
+    let context = context.read().await;
+    logic::get_account_votes(&context, account_id_hex)
+        .await
+        .map_err(warp::reject::custom)?
+        .ok_or_else(warp::reject::not_found)
+        .map(|r| warp::reply::json(&r))
+}
+
+pub async fn get_accounts_votes_count(context: ContextLock) -> Result<impl Reply, Rejection> {
+    let context = context.read().await;
+    logic::get_accounts_votes_count(&context)
         .await
         .map_err(warp::reject::custom)
         .map(|r| warp::reply::json(&r))

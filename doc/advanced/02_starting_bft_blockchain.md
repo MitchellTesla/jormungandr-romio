@@ -68,7 +68,7 @@ from the given genesis configuration file (`genesis.yaml`).
 
 Now that the blockchain is initialized, you need to start your node.
 
-Write you private key in a file on your HD:
+Write your private key in a file on your HD:
 
 ```sh
 $ cat node_secret.yaml
@@ -125,4 +125,5 @@ jormungandr --genesis-block block-0.bin --config node.config --secret node_secre
 
 # Script
 
-Additionally, there is a script [here](https://github.com/input-output-hk/jormungandr/blob/master/scripts/bootstrap) that can be used to bootstrap a test node with bft consensus protocol.
+Additionally, there is a script [here](https://github.com/input-output-hk/jormungandr/blob/master/scripts/bootstrap.py)
+that can be used to bootstrap a test node with bft consensus protocol.

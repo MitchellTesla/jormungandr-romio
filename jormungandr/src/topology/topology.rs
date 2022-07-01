@@ -2,10 +2,13 @@
 //!
 use super::{
     layers::{self, LayersConfig},
-    topic, Gossip, Gossips, NodeId, Peer, PeerInfo, Quarantine,
+    quarantine::ReportNodeStatus,
+    topic, Gossips, NodeId, Peer, PeerInfo, ReportRecords,
 };
-
-use crate::settings::start::network::Configuration;
+use crate::{
+    metrics::{Metrics, MetricsBackend},
+    settings::start::network::Configuration,
+};
 use chain_crypto::Ed25519;
 use jormungandr_lib::crypto::key::SigningKey;
 use poldercast::{
@@ -14,8 +17,10 @@ use poldercast::{
 };
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaChaRng;
-use std::convert::TryInto;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::{
+    convert::TryInto,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+};
 use tracing::instrument;
 
 lazy_static! {
@@ -35,8 +40,9 @@ pub struct View {
 /// object holding the P2pTopology of the Node
 pub struct P2pTopology {
     topology: Topology,
-    quarantine: Quarantine,
+    quarantine: ReportRecords,
     key: keynesis::key::ed25519::SecretKey,
+    stats_counter: Metrics,
 }
 
 struct CustomLayerBuilder {
@@ -99,11 +105,11 @@ impl LayerBuilder for CustomLayerBuilder {
 }
 
 impl P2pTopology {
-    pub fn new(config: &Configuration) -> Self {
-        let addr = config.public_address.or(Some(*LOCAL_ADDR)).unwrap();
+    pub fn new(config: &Configuration, stats_counter: Metrics) -> Self {
+        let addr = config.public_address.unwrap_or(*LOCAL_ADDR);
         let key = secret_key_into_keynesis(config.node_key.clone());
 
-        let quarantine = Quarantine::from_config(config.policy.clone());
+        let quarantine = ReportRecords::from_config(config.policy.clone());
         let custom_builder = CustomLayerBuilder::from(config.layers.clone());
         let mut topology = Topology::new_with(addr, &key, custom_builder);
         topology.subscribe_topic(topic::MESSAGES);
@@ -112,6 +118,7 @@ impl P2pTopology {
             topology,
             quarantine,
             key,
+            stats_counter,
         }
     }
 
@@ -144,76 +151,79 @@ impl P2pTopology {
 
     #[instrument(skip(self, gossips), level = "debug")]
     pub fn accept_gossips(&mut self, gossips: Gossips) {
-        // Even if lifted from quarantine, peers will be re-added to the topology
-        // only after we receive a gossip about them.
-        let lifted = self.quarantine.lift_from_quarantine();
-        for node in lifted {
-            // It may happen that a node is evicted from the dirty pool
-            // in poldercast and then re-enters the topology in the 'pool'
-            // pool, all while we hold the node in quarantine.
-            // If that happens we should not promote it anymore.
-            let is_dirty = self.topology.peers().dirty().contains(node.id.as_ref());
-            if is_dirty {
-                tracing::debug!(node = %node.address, id=?node.id, "lifting node from quarantine");
-                self.topology.promote_peer(&node.id.as_ref());
-            } else {
-                tracing::debug!(node = %node.address, "node from quarantine have left the dirty pool. skipping it");
-            }
-        }
-
         let gossips = <Vec<poldercast::Gossip>>::from(gossips);
         for gossip in gossips {
             let peer = Profile::from_gossip(gossip);
-            tracing::trace!(node = %peer.address(), "received peer from gossip");
-            self.topology.add_peer(peer);
+            let peer_id = NodeId(peer.id());
+            tracing::trace!(addr = %peer.address(), %peer_id, "received peer from incoming gossip");
+            if self.topology.add_peer(peer) {
+                self.quarantine.record_new_gossip(&peer_id);
+                self.stats_counter
+                    .set_peer_available_cnt(self.peer_available_cnt());
+            }
         }
     }
 
     // This may return nodes that are still quarantined but have been
     // forgotten by the underlying poldercast implementation.
     pub fn list_quarantined(&self) -> Vec<PeerInfo> {
-        self.quarantine.quarantined_nodes()
+        let ids = self.topology.peers().dirty();
+        // reported nodes also include reports against nodes that are not in the dirty pool
+        // and we should include those here
+        self.quarantine
+            .reported_nodes()
+            .into_iter()
+            .filter(|profile| ids.contains(profile.id.as_ref()))
+            .collect()
     }
 
-    pub fn list_available(&self) -> Vec<PeerInfo> {
+    /// This returns the peers known to the node which are not quarantined.
+    /// Please note some of these may not be present in the topology view.
+    pub fn list_available(&self) -> impl Iterator<Item = Peer> + '_ {
         let profiles = self.topology.peers();
         profiles
             .pool()
             .iter()
             .chain(profiles.trusted().iter())
-            .map(|(_, profile)| profile.into())
-            .collect()
+            .map(|(_, profile)| profile.gossip().clone().into())
     }
 
-    pub fn list_non_public(&self) -> Vec<PeerInfo> {
+    pub fn list_non_public(&self) -> impl Iterator<Item = Peer> + '_ {
         let profiles = self.topology.peers();
         profiles
             .pool()
             .iter()
             .chain(profiles.trusted().iter())
             .filter_map(|(_, profile)| {
-                if Gossip::from(profile.gossip().clone()).is_global() {
+                let peer = Peer::from(profile.gossip().clone());
+                if peer.is_global() {
                     None
                 } else {
-                    Some(profile.into())
+                    Some(peer)
                 }
             })
-            .collect()
     }
 
     /// register that we were able to establish an handshake with given peer
     pub fn promote_node(&mut self, node: &NodeId) {
         self.topology.promote_peer(node.as_ref());
+        self.stats_counter
+            .set_peer_available_cnt(self.peer_available_cnt());
     }
 
     /// register a strike against the given peer
+    #[instrument(skip_all, level = "debug", fields(%node_id))]
     pub fn report_node(&mut self, node_id: &NodeId) {
         if let Some(node) = self.topology.get(node_id.as_ref()).cloned() {
-            if self.quarantine.quarantine_node((&node).into()) {
-                self.topology.remove_peer(node_id.as_ref());
-                // Trusted peers in poldercast requires to be demoted 2 times before
-                // moving to the dirty pool
-                self.topology.remove_peer(node_id.as_ref());
+            let result = self
+                .quarantine
+                .report_node(&mut self.topology, Peer::from(node.gossip().clone()));
+            if let ReportNodeStatus::Quarantine | ReportNodeStatus::SoftReport = result {
+                self.stats_counter
+                    .set_peer_available_cnt(self.peer_available_cnt());
+            }
+            if let ReportNodeStatus::Quarantine = result {
+                self.stats_counter.add_peer_quarantined_cnt(1);
             }
         }
     }
@@ -222,5 +232,33 @@ impl P2pTopology {
     /// it and are alive
     pub fn update_gossip(&mut self) {
         self.topology.update_profile_subscriptions(&self.key);
+    }
+
+    pub fn lift_reports(&mut self) -> Vec<Peer> {
+        self.quarantine
+            .lift_reports()
+            .into_iter()
+            .filter_map(|node| {
+                let node = self.topology.peers().dirty().peek(node.id.as_ref()).cloned();
+                // It may happen that a node is evicted from the dirty pool
+                // in poldercast and then re-enters the topology in the 'pool'
+                // pool, all while we hold the node in quarantine.
+                // If that happens we should not promote it anymore.
+                if let Some(node) = &node {
+                    tracing::debug!(node = %node.address(), id=?node.id(), "lifting node from quarantine");
+                    self.topology.promote_peer(&node.id());
+                    self.stats_counter.sub_peer_quarantined_cnt(1);
+                    self.stats_counter
+                    .set_peer_available_cnt(self.peer_available_cnt());
+                }
+                node.map(|node| Peer::from(node.gossip().clone()))
+            })
+            .collect()
+    }
+
+    fn peer_available_cnt(&self) -> usize {
+        // We cannot use ExactSizeIterator as a limitation of iterator::chain, but since
+        // size_hint still relies on the underlying exact size iterator, it is equivalent.
+        self.list_available().size_hint().0
     }
 }

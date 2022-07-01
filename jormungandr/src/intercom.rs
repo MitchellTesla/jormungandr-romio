@@ -1,22 +1,24 @@
-use crate::blockcfg::{
-    ApplyBlockLedger, Block, Fragment, FragmentId, Header, HeaderHash, LedgerParameters,
+use crate::{
+    blockcfg::{
+        ApplyBlockLedger, Block, Fragment, FragmentId, Header, HeaderHash, LedgerParameters,
+    },
+    blockchain::{Checkpoints, LeadershipBlock, StorageError},
+    fragment::selection::FragmentSelectionAlgorithmParams,
+    network::p2p::comm::PeerInfo,
+    topology::{Gossips, NodeId, Peer, PeerInfo as TopologyPeerInfo, View},
+    utils::async_msg::{self, MessageBox, MessageQueue},
 };
-use crate::blockchain::{Checkpoints, LeadershipBlock, StorageError};
-use crate::fragment::selection::FragmentSelectionAlgorithmParams;
-use crate::network::p2p::{comm::PeerInfo, Address};
-use crate::topology::{Gossips, NodeId, Peer, PeerInfo as TopologyPeerInfo, View};
-use crate::utils::async_msg::{self, MessageBox, MessageQueue};
 use chain_impl_mockchain::fragment::Contents as FragmentContents;
 use chain_network::error as net_error;
+use futures::{
+    channel::{mpsc, oneshot},
+    prelude::*,
+    ready,
+};
 use jormungandr_lib::interfaces::{
-    FragmentLog, FragmentOrigin, FragmentStatus, FragmentsProcessingSummary,
+    BlockDate, FragmentLog, FragmentOrigin, FragmentStatus, FragmentsProcessingSummary,
 };
 use poldercast::layer::Selection;
-
-use futures::channel::{mpsc, oneshot};
-use futures::prelude::*;
-use futures::ready;
-
 use std::{
     collections::HashMap,
     error,
@@ -509,13 +511,13 @@ pub enum TransactionMsg {
         reply_handle: ReplyHandle<FragmentsProcessingSummary>,
     },
     RemoveTransactions(Vec<FragmentId>, FragmentStatus),
+    BranchSwitch(BlockDate),
     GetLogs(ReplyHandle<Vec<FragmentLog>>),
     GetStatuses(
         Vec<FragmentId>,
         ReplyHandle<HashMap<FragmentId, FragmentStatus>>,
     ),
     SelectTransactions {
-        pool_idx: usize,
         ledger: ApplyBlockLedger,
         ledger_params: LedgerParameters,
         selection_alg: FragmentSelectionAlgorithmParams,
@@ -577,9 +579,9 @@ impl Debug for ClientMsg {
 /// General Block Message for the block task
 pub enum BlockMsg {
     /// A trusted Block has been received from the leadership task
-    LeadershipBlock(LeadershipBlock),
+    LeadershipBlock(Box<LeadershipBlock>),
     /// A untrusted block Header has been received from the network task
-    AnnouncedBlock(Header, Address),
+    AnnouncedBlock(Box<Header>, NodeId),
     /// A stream of untrusted blocks has been received from the network task.
     NetworkBlocks(RequestStreamHandle<Block, ()>),
     /// The stream of headers for missing chain blocks has been received
@@ -591,7 +593,7 @@ pub enum BlockMsg {
 /// Propagation requests for the network task.
 #[derive(Debug)]
 pub enum PropagateMsg {
-    Block(Header),
+    Block(Box<Header>),
     Fragment(Fragment),
     Gossip(Peer, Gossips),
 }
@@ -599,11 +601,11 @@ pub enum PropagateMsg {
 /// Messages to the network task.
 #[derive(Debug)]
 pub enum NetworkMsg {
-    Propagate(PropagateMsg),
+    Propagate(Box<PropagateMsg>),
     GetBlocks(Vec<HeaderHash>),
-    GetNextBlock(Address, HeaderHash),
+    GetNextBlock(NodeId, HeaderHash),
     PullHeaders {
-        node_address: Address,
+        node_id: NodeId,
         from: Checkpoints,
         to: HeaderHash,
     },
@@ -621,10 +623,10 @@ pub enum TopologyMsg {
     ListQuarantined(ReplyHandle<Vec<TopologyPeerInfo>>),
 }
 
-/// Messages to the explorer task
-pub enum ExplorerMsg {
+/// Messages to the notifier task
+pub enum WatchMsg {
     NewBlock(Block),
-    NewTip(HeaderHash),
+    NewTip(Header),
 }
 
 #[cfg(test)]

@@ -1,24 +1,23 @@
-use super::{buffer_sizes, convert::Decode, p2p::Address, GlobalStateR};
+use super::{buffer_sizes, convert::Decode, GlobalStateR};
 use crate::{
     blockcfg::Fragment,
     intercom::{self, BlockMsg, TopologyMsg, TransactionMsg},
     settings::start::network::Configuration,
-    topology::Gossip,
+    topology::{Gossip, NodeId},
     utils::async_msg::{self, MessageBox},
 };
-use chain_network::data as net_data;
-use chain_network::error::{Code, Error};
+use chain_network::{
+    data as net_data,
+    error::{Code, Error},
+};
+use futures::{future::BoxFuture, prelude::*, ready};
 use jormungandr_lib::interfaces::FragmentOrigin;
-
-use futures::future::BoxFuture;
-use futures::prelude::*;
-use futures::ready;
-use tracing::Span;
-
-use std::error::Error as _;
-use std::mem;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::{
+    error::Error as _,
+    mem,
+    pin::Pin,
+    task::{Context, Poll},
+};
 use tracing_futures::Instrument;
 
 fn filter_gossip_node(node: &Gossip, config: &Configuration) -> bool {
@@ -40,13 +39,12 @@ fn handle_mbox_error(err: async_msg::SendError) -> Error {
 pub async fn process_block_announcements<S>(
     stream: S,
     mbox: MessageBox<BlockMsg>,
-    node_id: Address,
+    node_id: NodeId,
     global_state: GlobalStateR,
-    span: Span,
 ) where
     S: TryStream<Ok = net_data::Header, Error = Error>,
 {
-    let sink = BlockAnnouncementProcessor::new(mbox, node_id, global_state, span);
+    let sink = BlockAnnouncementProcessor::new(mbox, node_id, global_state);
     stream
         .into_stream()
         .forward(sink)
@@ -59,13 +57,12 @@ pub async fn process_block_announcements<S>(
 pub async fn process_gossip<S>(
     stream: S,
     mbox: MessageBox<TopologyMsg>,
-    node_id: Address,
+    node_id: NodeId,
     global_state: GlobalStateR,
-    span: Span,
 ) where
     S: TryStream<Ok = net_data::Gossip, Error = Error>,
 {
-    let processor = GossipProcessor::new(mbox, node_id, global_state, span);
+    let processor = GossipProcessor::new(mbox, node_id, global_state, Direction::Server);
     stream
         .into_stream()
         .forward(processor)
@@ -81,13 +78,12 @@ pub async fn process_gossip<S>(
 pub async fn process_fragments<S>(
     stream: S,
     mbox: MessageBox<TransactionMsg>,
-    node_id: Address,
+    node_id: NodeId,
     global_state: GlobalStateR,
-    span: Span,
 ) where
     S: TryStream<Ok = net_data::Fragment, Error = Error>,
 {
-    let sink = FragmentProcessor::new(mbox, node_id, global_state, span);
+    let sink = FragmentProcessor::new(mbox, node_id, global_state);
     stream
         .into_stream()
         .forward(sink)
@@ -100,25 +96,22 @@ pub async fn process_fragments<S>(
 #[must_use = "sinks do nothing unless polled"]
 pub struct BlockAnnouncementProcessor {
     mbox: MessageBox<BlockMsg>,
-    node_id: Address,
+    node_id: NodeId,
     global_state: GlobalStateR,
     pending_processing: PendingProcessing,
-    span: Span,
 }
 
 impl BlockAnnouncementProcessor {
     pub(super) fn new(
         mbox: MessageBox<BlockMsg>,
-        node_id: Address,
+        node_id: NodeId,
         global_state: GlobalStateR,
-        span: Span,
     ) -> Self {
         BlockAnnouncementProcessor {
             mbox,
             node_id,
             global_state,
             pending_processing: PendingProcessing::default(),
-            span,
         }
     }
 
@@ -130,12 +123,12 @@ impl BlockAnnouncementProcessor {
         let state = self.global_state.clone();
         let node_id = self.node_id;
         let fut = async move {
-            let refreshed = state.peers.refresh_peer_on_block(node_id).await;
+            let refreshed = state.peers.refresh_peer_on_block(&node_id).await;
             if !refreshed {
                 tracing::debug!("received block from node that is not in the peer map");
             }
         }
-        .instrument(self.span.clone());
+        .in_current_span();
         // It's OK to overwrite a pending future because only the latest
         // timestamp matters.
         self.pending_processing.start(fut);
@@ -151,19 +144,17 @@ impl BlockAnnouncementProcessor {
 #[must_use = "sinks do nothing unless polled"]
 pub struct FragmentProcessor {
     mbox: MessageBox<TransactionMsg>,
-    node_id: Address,
+    node_id: NodeId,
     global_state: GlobalStateR,
     buffered_fragments: Vec<Fragment>,
     pending_processing: PendingProcessing,
-    span: Span,
 }
 
 impl FragmentProcessor {
     pub(super) fn new(
         mbox: MessageBox<TransactionMsg>,
-        node_id: Address,
+        node_id: NodeId,
         global_state: GlobalStateR,
-        span: Span,
     ) -> Self {
         FragmentProcessor {
             mbox,
@@ -171,48 +162,61 @@ impl FragmentProcessor {
             global_state,
             buffered_fragments: Vec::with_capacity(buffer_sizes::inbound::FRAGMENTS),
             pending_processing: PendingProcessing::default(),
-            span,
         }
     }
 
     fn refresh_stat(&mut self) {
-        let refresh_span = self.span.clone();
         let state = self.global_state.clone();
         let node_id = self.node_id;
         let fut = async move {
-            let refreshed = state.peers.refresh_peer_on_fragment(node_id).await;
+            let refreshed = state.peers.refresh_peer_on_fragment(&node_id).await;
             if !refreshed {
                 tracing::debug!("received fragment from node that is not in the peer map",);
             }
         }
-        .instrument(refresh_span);
+        .in_current_span();
         // It's OK to overwrite a pending future because only the latest
         // timestamp matters.
         self.pending_processing.start(fut);
     }
 }
 
+pub enum Direction {
+    Server,
+    Client,
+}
+
 pub struct GossipProcessor {
     mbox: MessageBox<TopologyMsg>,
-    node_id: Address,
+    node_id: NodeId,
     global_state: GlobalStateR,
-    span: Span,
     pending_processing: PendingProcessing,
+    // To keep a healthy pool of p2p peers, we need to keep track of nodes we were able
+    // to connect to successfully.
+    // However, a server may need to accomodate peers which are not publicy reachable
+    // (e.g. private nodes, full wallets, ...) and embedding this process in the handshake
+    // procedure is not the best idea.
+    // Instead, a peer is "promoted" (i.e. marked as successfully connected in poldercast terminology)
+    // after the first gossip is received, which signals interest in participating in the dissemination
+    // overlay.
+    peer_promoted: bool,
 }
 
 impl GossipProcessor {
     pub(super) fn new(
         mbox: MessageBox<TopologyMsg>,
-        node_id: Address,
+        node_id: NodeId,
         global_state: GlobalStateR,
-        span: Span,
+        direction: Direction,
     ) -> Self {
         GossipProcessor {
             mbox,
             node_id,
             global_state,
-            span,
             pending_processing: Default::default(),
+            // client will handle promotion after handshake since they are connecting to a public
+            // node by construction
+            peer_promoted: matches!(direction, Direction::Client),
         }
     }
 }
@@ -240,7 +244,7 @@ impl Sink<net_data::Header> for BlockAnnouncementProcessor {
         })?;
         let node_id = self.node_id;
         self.mbox
-            .start_send(BlockMsg::AnnouncedBlock(header, node_id))
+            .start_send(BlockMsg::AnnouncedBlock(Box::new(header), node_id))
             .map_err(handle_mbox_error)?;
         self.refresh_stat();
         Ok(())
@@ -337,8 +341,6 @@ impl Sink<net_data::Fragment> for FragmentProcessor {
 
 impl FragmentProcessor {
     fn poll_send_fragments(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
-        let span = self.span.clone();
-        let _enter = span.enter();
         ready!(self.mbox.poll_ready(cx)).map_err(|e| {
             tracing::debug!(reason = %e, "error sending fragments for processing");
             Error::new(Code::Internal, e)
@@ -367,7 +369,6 @@ impl FragmentProcessor {
     }
 
     fn poll_flush_mbox(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
-        let _enter = self.span.enter();
         Pin::new(&mut self.mbox).poll_flush(cx).map_err(|e| {
             tracing::error!(
                 reason = %e,
@@ -378,7 +379,6 @@ impl FragmentProcessor {
     }
 
     fn poll_complete_refresh_stat(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        let _enter = self.span.enter();
         self.pending_processing.poll_complete(cx)
     }
 }
@@ -392,8 +392,6 @@ impl Sink<net_data::Gossip> for GossipProcessor {
     }
 
     fn start_send(mut self: Pin<&mut Self>, gossip: net_data::Gossip) -> Result<(), Error> {
-        let span = self.span.clone();
-        let _enter = span.enter();
         let nodes = gossip.nodes.decode().map_err(|e| {
             tracing::info!(
                 reason = %e.source().unwrap(),
@@ -408,12 +406,13 @@ impl Sink<net_data::Gossip> for GossipProcessor {
         if !filtered_out.is_empty() {
             tracing::debug!("nodes dropped from gossip: {:?}", filtered_out);
         }
+        let peer_promoted = std::mem::replace(&mut self.peer_promoted, true);
         let state1 = self.global_state.clone();
         let mut mbox = self.mbox.clone();
         let node_id = self.node_id;
         let fut = future::join(
             async move {
-                let refreshed = state1.peers.refresh_peer_on_gossip(node_id).await;
+                let refreshed = state1.peers.refresh_peer_on_gossip(&node_id).await;
                 if !refreshed {
                     tracing::debug!("received gossip from node that is not in the peer map",);
                 }
@@ -424,9 +423,17 @@ impl Sink<net_data::Gossip> for GossipProcessor {
                     .unwrap_or_else(|err| {
                         tracing::error!("cannot send gossips to topology: {}", err)
                     });
+                if !peer_promoted {
+                    tracing::info!(%node_id, "promoting peer");
+                    mbox.send(TopologyMsg::PromotePeer(node_id))
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::error!("Error sending message to topology task: {}", e)
+                        });
+                }
             },
         )
-        .instrument(span.clone())
+        .in_current_span()
         .map(|_| ());
         self.pending_processing.start(fut);
         Ok(())

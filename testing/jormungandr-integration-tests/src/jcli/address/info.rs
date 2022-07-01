@@ -1,5 +1,5 @@
-use crate::common::jcli::JCli;
 use chain_addr::Discrimination;
+use jormungandr_automation::jcli::JCli;
 
 #[test]
 pub fn test_info_unknown_address_public_key() {

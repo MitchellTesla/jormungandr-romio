@@ -1,53 +1,52 @@
 use super::{
     buffer_sizes,
     convert::{self, Decode, Encode, ResponseStream},
-    p2p::comm::{BlockEventSubscription, FragmentSubscription, GossipSubscription},
+    p2p::{
+        comm::{BlockEventSubscription, FragmentSubscription, GossipSubscription},
+        Address,
+    },
     subscription, Channels, GlobalStateR,
 };
-use crate::blockcfg as app_data;
-use crate::intercom::{self, BlockMsg, ClientMsg, TopologyMsg};
-use crate::topology::{self, Gossips};
-use crate::utils::async_msg::MessageBox;
-use chain_network::core::server::{BlockService, FragmentService, GossipService, Node, PushStream};
-use chain_network::data::p2p::{AuthenticatedNodeId, Peer};
-use chain_network::data::{
-    Block, BlockId, BlockIds, Fragment, FragmentIds, Gossip, HandshakeResponse, Header,
+use crate::{
+    blockcfg as app_data,
+    intercom::{self, BlockMsg, ClientMsg, RequestSink, TopologyMsg},
+    topology::{self, Gossips, NodeId},
+    utils::async_msg::MessageBox,
 };
-use chain_network::error::{Code as ErrorCode, Error};
-
 use async_trait::async_trait;
-use futures::prelude::*;
-use futures::try_join;
-use tracing::{span, Level, Span};
-use tracing_futures::Instrument;
-
+use chain_network::{
+    core::server::{BlockService, FragmentService, GossipService, Node, PushStream},
+    data::{
+        p2p::{AuthenticatedNodeId, Peer},
+        Block, BlockId, BlockIds, Fragment, FragmentIds, Gossip, HandshakeResponse, Header,
+    },
+    error::{Code as ErrorCode, Error},
+};
+use futures::{prelude::*, try_join};
 use std::convert::TryFrom;
+use tracing::{instrument, Span};
+use tracing_futures::Instrument;
 
 #[derive(Clone)]
 pub struct NodeService {
     channels: Channels,
     global_state: GlobalStateR,
-    span: Span,
 }
 
 impl NodeService {
     pub fn new(channels: Channels, global_state: GlobalStateR) -> Self {
-        let span = span!(parent: global_state.span(), Level::TRACE, "sub_task", kind = "server");
         NodeService {
             channels,
             global_state,
-            span,
         }
     }
 
-    pub fn span(&self) -> &Span {
-        &self.span
-    }
-}
-
-impl NodeService {
-    fn subscription_span(&self, subscriber: Peer, stream_name: &'static str) -> Span {
-        span!(parent: self.span(), Level::TRACE, "NodeService", peer = %subscriber.to_string(), stream = %stream_name)
+    async fn peer_id(&self, addr: Address) -> Result<NodeId, Error> {
+        self.global_state
+            .peers
+            .client_id(addr)
+            .await
+            .ok_or_else(|| Error::new(ErrorCode::FailedPrecondition, "handshake not performed"))
     }
 }
 
@@ -74,15 +73,11 @@ impl Node for NodeService {
     /// Handles client ID authentication.
     async fn client_auth(&self, peer: Peer, auth: AuthenticatedNodeId) -> Result<(), Error> {
         let addr = peer.addr();
-        let nonce = self.global_state.peers.get_auth_nonce(addr).await;
-        let nonce = nonce.ok_or_else(|| {
-            Error::new(
-                ErrorCode::FailedPrecondition,
-                "nonce is missing, perform Handshake first",
-            )
-        })?;
-        auth.verify(&nonce[..])?;
-        self.global_state.peers.set_node_id(addr, auth.into()).await;
+        let id = auth.id().clone().decode()?;
+        self.global_state
+            .peers
+            .server_complete_handshake(addr, id, |nonce| auth.verify(&nonce[..]))
+            .await?;
         Ok(())
     }
 
@@ -112,8 +107,31 @@ async fn send_message<T>(mut mbox: MessageBox<T>, msg: T) -> Result<(), Error> {
 type SubscriptionStream<S> =
     stream::Map<S, fn(<S as Stream>::Item) -> Result<<S as Stream>::Item, Error>>;
 
-fn serve_subscription<S: Stream>(sub: S) -> SubscriptionStream<S> {
-    sub.map(Ok)
+fn serve_subscription<S: Stream>(sub: Option<S>) -> Result<SubscriptionStream<S>, Error> {
+    Ok(sub
+        .ok_or_else(|| Error::new(ErrorCode::FailedPrecondition, "handshake not performed"))?
+        .map(Ok))
+}
+
+// extracted as an external function as a workaround for
+// https://github.com/dtolnay/async-trait/issues/144
+async fn join_streams<T, V, E, R>(
+    stream: PushStream<T>,
+    sink: RequestSink<<T as Decode>::Object>,
+    reply: V,
+) -> Result<(), Error>
+where
+    T: Decode,
+    E: Into<Error>,
+    V: Future<Output = Result<R, E>>,
+{
+    try_join!(
+        stream
+            .and_then(|header| async { header.decode() })
+            .forward(sink.sink_err_into()),
+        reply.err_into::<Error>(),
+    )?;
+    Ok(())
 }
 
 #[async_trait]
@@ -125,18 +143,16 @@ impl BlockService for NodeService {
     type GetHeadersStream = ResponseStream<app_data::Header>;
     type SubscriptionStream = SubscriptionStream<BlockEventSubscription>;
 
+    #[instrument(level = "debug", skip(self))]
     async fn tip(&self) -> Result<Header, Error> {
-        let span = span!(Level::TRACE, "request", kind = "Tip");
         let (reply_handle, reply_future) = intercom::unary_reply();
-        let reply_future = reply_future.instrument(span.clone());
         let mbox = self.channels.client_box.clone();
-        send_message(mbox, ClientMsg::GetBlockTip(reply_handle))
-            .instrument(span)
-            .await?;
+        send_message(mbox, ClientMsg::GetBlockTip(reply_handle)).await?;
         let header = reply_future.await?;
         Ok(header.encode())
     }
 
+    #[instrument(level = "debug", skip(self))]
     async fn pull_blocks(
         &self,
         from: BlockIds,
@@ -144,57 +160,47 @@ impl BlockService for NodeService {
     ) -> Result<Self::PullBlocksStream, Error> {
         let from = from.decode()?;
         let to = to.decode()?;
-        let span = span!(Level::TRACE, "request", kind = "PullBlocks");
         let (handle, future) = intercom::stream_reply(buffer_sizes::outbound::BLOCKS);
-        let future = future.instrument(span.clone());
         let client_box = self.channels.client_box.clone();
-        send_message(client_box, ClientMsg::PullBlocks(from, to, handle))
-            .instrument(span)
-            .await?;
+        send_message(client_box, ClientMsg::PullBlocks(from, to, handle)).await?;
         let stream = future.await?;
         Ok(convert::response_stream(stream))
     }
 
+    #[instrument(level = "debug", skip(self))]
     async fn pull_blocks_to_tip(
         &self,
         from: BlockIds,
     ) -> Result<Self::PullBlocksToTipStream, Error> {
         let from = from.decode()?;
-        let span = span!(Level::TRACE, "request", kind = "PullBlocksToTip");
         let (handle, future) = intercom::stream_reply(buffer_sizes::outbound::BLOCKS);
-        let future = future.instrument(span.clone());
         let client_box = self.channels.client_box.clone();
-        send_message(client_box, ClientMsg::PullBlocksToTip(from, handle))
-            .instrument(span)
-            .await?;
+        send_message(client_box, ClientMsg::PullBlocksToTip(from, handle)).await?;
         let stream = future.await?;
         Ok(convert::response_stream(stream))
     }
 
+    #[instrument(level = "debug", skip(self))]
     async fn get_blocks(&self, ids: BlockIds) -> Result<Self::GetBlocksStream, Error> {
         let ids = ids.decode()?;
-        let span = span!(Level::TRACE, "request", kind = "GetBlocks");
         let (handle, future) = intercom::stream_reply(buffer_sizes::outbound::BLOCKS);
-        let future = future.instrument(span.clone());
         let client_box = self.channels.client_box.clone();
         send_message(client_box, ClientMsg::GetBlocks(ids, handle)).await?;
         let stream = future.await?;
         Ok(convert::response_stream(stream))
     }
 
+    #[instrument(level = "debug", skip(self))]
     async fn get_headers(&self, ids: BlockIds) -> Result<Self::GetHeadersStream, Error> {
         let ids = ids.decode()?;
-        let span = span!(Level::TRACE, "request", kind = "GetHeaders");
         let (handle, future) = intercom::stream_reply(buffer_sizes::outbound::HEADERS);
-        let future = future.instrument(span.clone());
         let client_box = self.channels.client_box.clone();
-        send_message(client_box, ClientMsg::GetHeaders(ids, handle))
-            .instrument(span)
-            .await?;
+        send_message(client_box, ClientMsg::GetHeaders(ids, handle)).await?;
         let stream = future.await?;
         Ok(convert::response_stream(stream))
     }
 
+    #[instrument(level = "debug", skip(self))]
     async fn pull_headers(
         &self,
         from: BlockIds,
@@ -202,76 +208,53 @@ impl BlockService for NodeService {
     ) -> Result<Self::PullHeadersStream, Error> {
         let from = from.decode()?;
         let to = to.decode()?;
-        let span = span!(Level::TRACE, "request", kind = "PullHeaders");
         let (handle, future) = intercom::stream_reply(buffer_sizes::outbound::HEADERS);
-        let future = future.instrument(span.clone());
         let client_box = self.channels.client_box.clone();
-        send_message(client_box, ClientMsg::PullHeaders(from, to, handle))
-            .instrument(span)
-            .await?;
+        send_message(client_box, ClientMsg::PullHeaders(from, to, handle)).await?;
         let stream = future.await?;
         Ok(convert::response_stream(stream))
     }
 
+    #[instrument(level = "debug", skip(self, stream))]
     async fn push_headers(&self, stream: PushStream<Header>) -> Result<(), Error> {
-        let span = span!(Level::TRACE, "request", kind = "PushHeaders");
         let (handle, sink, reply) = intercom::stream_request(buffer_sizes::inbound::HEADERS);
-        let reply = reply.instrument(span.clone());
         let block_box = self.channels.block_box.clone();
-        send_message(block_box, BlockMsg::ChainHeaders(handle))
-            .instrument(span)
-            .await?;
-        try_join!(
-            stream
-                .and_then(|header| async { header.decode() })
-                .forward(sink.sink_err_into()),
-            reply.err_into(),
-        )?;
-        Ok(())
+        send_message(block_box, BlockMsg::ChainHeaders(handle)).await?;
+        join_streams(stream, sink, reply).await
     }
 
+    #[instrument(level = "debug", skip(self, stream))]
     async fn upload_blocks(&self, stream: PushStream<Block>) -> Result<(), Error> {
-        let span = span!(Level::TRACE, "request", kind = "UploadBlocks");
         let (handle, sink, reply) = intercom::stream_request(buffer_sizes::inbound::BLOCKS);
-        let reply = reply.instrument(span.clone());
         let block_box = self.channels.block_box.clone();
-        send_message(block_box, BlockMsg::NetworkBlocks(handle))
-            .instrument(span)
-            .await?;
-        try_join!(
-            stream
-                .and_then(|block| async { block.decode() })
-                .forward(sink.sink_err_into()),
-            reply.err_into(),
-        )?;
-        Ok(())
+        send_message(block_box, BlockMsg::NetworkBlocks(handle)).await?;
+        join_streams(stream, sink, reply).await
     }
 
+    #[instrument(level = "debug", skip_all, fields(addr = %subscriber, id))]
     async fn block_subscription(
         &self,
         subscriber: Peer,
         stream: PushStream<Header>,
     ) -> Result<Self::SubscriptionStream, Error> {
-        let addr = subscriber.addr();
-        let span = self.subscription_span(subscriber, "block_events");
-
+        let peer_id = self.peer_id(subscriber.addr()).await?;
+        Span::current().record("id", &peer_id.to_string().as_str());
         self.global_state.spawn(
             subscription::process_block_announcements(
                 stream,
                 self.channels.block_box.clone(),
-                addr,
+                peer_id,
                 self.global_state.clone(),
-                span.clone(),
             )
-            .instrument(span),
+            .in_current_span(),
         );
 
         let outbound = self
             .global_state
             .peers
-            .subscribe_to_block_events(addr)
+            .subscribe_to_block_events(&peer_id)
             .await;
-        Ok(serve_subscription(outbound))
+        Ok(serve_subscription(outbound)?)
     }
 }
 
@@ -284,29 +267,30 @@ impl FragmentService for NodeService {
         Err(Error::unimplemented())
     }
 
+    #[instrument(level = "debug", skip_all, fields(direction = "in", addr = %subscriber, id))]
     async fn fragment_subscription(
         &self,
         subscriber: Peer,
         stream: PushStream<Fragment>,
     ) -> Result<Self::SubscriptionStream, Error> {
-        let addr = subscriber.addr();
-        let parent_span = self.subscription_span(subscriber, "fragments");
-        parent_span.in_scope(|| {
-            let span = span!(Level::TRACE, "fragment_subscription", direction = "in");
-            self.global_state.spawn(
-                subscription::process_fragments(
-                    stream,
-                    self.channels.transaction_box.clone(),
-                    addr,
-                    self.global_state.clone(),
-                    span.clone(),
-                )
-                .instrument(span),
-            );
-        });
+        let peer_id = self.peer_id(subscriber.addr()).await?;
+        Span::current().record("id", &peer_id.to_string().as_str());
+        self.global_state.spawn(
+            subscription::process_fragments(
+                stream,
+                self.channels.transaction_box.clone(),
+                peer_id,
+                self.global_state.clone(),
+            )
+            .in_current_span(),
+        );
 
-        let outbound = self.global_state.peers.subscribe_to_fragments(addr).await;
-        Ok(serve_subscription(outbound))
+        let outbound = self
+            .global_state
+            .peers
+            .subscribe_to_fragments(&peer_id)
+            .await;
+        Ok(serve_subscription(outbound)?)
     }
 }
 
@@ -314,32 +298,29 @@ impl FragmentService for NodeService {
 impl GossipService for NodeService {
     type SubscriptionStream = SubscriptionStream<GossipSubscription>;
 
+    #[instrument(level = "debug", skip_all, fields(direction = "in", addr = %subscriber, id))]
     async fn gossip_subscription(
         &self,
         subscriber: Peer,
         stream: PushStream<Gossip>,
     ) -> Result<Self::SubscriptionStream, Error> {
-        let addr = subscriber.addr();
-        let parent_span = self.subscription_span(subscriber, "gossip");
-        parent_span.in_scope(|| {
-            let span = span!(Level::TRACE, "gossip_subscription", direction = "in");
+        let peer_id = self.peer_id(subscriber.addr()).await?;
+        Span::current().record("id", &peer_id.to_string().as_str());
+        self.global_state.spawn(
+            subscription::process_gossip(
+                stream,
+                self.channels.topology_box.clone(),
+                peer_id,
+                self.global_state.clone(),
+            )
+            .in_current_span(),
+        );
 
-            self.global_state.spawn(
-                subscription::process_gossip(
-                    stream,
-                    self.channels.topology_box.clone(),
-                    addr,
-                    self.global_state.clone(),
-                    span.clone(),
-                )
-                .instrument(span),
-            );
-        });
-
-        let outbound = self.global_state.peers.subscribe_to_gossip(addr).await;
-        Ok(serve_subscription(outbound))
+        let outbound = self.global_state.peers.subscribe_to_gossip(&peer_id).await;
+        Ok(serve_subscription(outbound)?)
     }
 
+    #[instrument(level = "debug", skip(self))]
     async fn peers(&self, limit: u32) -> Result<Gossip, Error> {
         let (reply_handle, reply_future) = intercom::unary_reply();
         let mbox = self.channels.topology_box.clone();

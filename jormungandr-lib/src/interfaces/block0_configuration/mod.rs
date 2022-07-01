@@ -8,23 +8,28 @@ mod initial_fragment;
 mod kes_update_speed;
 mod leader_id;
 mod number_of_slots_per_epoch;
+mod proposal_expiration;
 mod reward_constraint;
 mod slots_duration;
 
-pub use self::active_slot_coefficient::ActiveSlotCoefficient;
-pub use self::block_content_max_size::BlockContentMaxSize;
-pub use self::default_values::*;
-pub use self::epoch_stability_depth::EpochStabilityDepth;
-pub use self::fees_go_to::FeesGoTo;
-pub use self::initial_config::BlockchainConfiguration;
-pub use self::initial_fragment::{
-    try_initials_vec_from_messages, Initial, InitialUTxO, LegacyUTxO,
+pub use self::{
+    active_slot_coefficient::{ActiveSlotCoefficient, TryFromActiveSlotCoefficientError},
+    block_content_max_size::BlockContentMaxSize,
+    default_values::*,
+    epoch_stability_depth::EpochStabilityDepth,
+    fees_go_to::{FeesGoTo, TryFromFeesGoToError},
+    initial_config::{BlockchainConfiguration, ConsensusVersionDef, DiscriminationDef},
+    initial_fragment::{
+        try_initial_fragment_from_message, Destination, Initial, InitialToken, InitialUTxO,
+        LegacyUTxO,
+    },
+    kes_update_speed::{KesUpdateSpeed, TryFromKesUpdateSpeedError},
+    leader_id::ConsensusLeaderId,
+    number_of_slots_per_epoch::{NumberOfSlotsPerEpoch, TryFromNumberOfSlotsPerEpochError},
+    proposal_expiration::ProposalExpiration,
+    reward_constraint::{PoolParticipationCapping, RewardConstraints},
+    slots_duration::{SlotDuration, TryFromSlotDurationError},
 };
-pub use self::kes_update_speed::KesUpdateSpeed;
-pub use self::leader_id::ConsensusLeaderId;
-pub use self::number_of_slots_per_epoch::NumberOfSlotsPerEpoch;
-pub use self::reward_constraint::{PoolParticipationCapping, RewardConstraints};
-pub use self::slots_duration::SlotDuration;
 use chain_impl_mockchain::{
     block::{self, Block},
     fragment::{ContentsBuilder, Fragment},
@@ -74,9 +79,13 @@ impl Block0Configuration {
             _ => return Err(Block0ConfigurationError::FirstBlock0MessageNotInit),
         };
 
+        let discrimination = blockchain_configuration.discrimination;
+
         Ok(Block0Configuration {
             blockchain_configuration,
-            initial: initial_fragment::try_initials_vec_from_messages(messages)?,
+            initial: messages
+                .map(|message| try_initial_fragment_from_message(discrimination, message))
+                .collect::<Result<Vec<_>, _>>()?,
         })
     }
 
@@ -85,7 +94,9 @@ impl Block0Configuration {
         content_builder.push(Fragment::Initial(
             self.blockchain_configuration.clone().into(),
         ));
-        content_builder.push_many(self.initial.iter().map(Fragment::from));
+        for fragments in self.initial.iter().map(<Vec<Fragment>>::try_from) {
+            content_builder.push_many(fragments.unwrap());
+        }
         let content = content_builder.into();
         block::builder(BlockVersion::Genesis, content, |hdr| {
             let r: Result<Header, Infallible> = Ok(hdr
@@ -109,18 +120,28 @@ pub fn block0_configuration_documented_example() -> String {
 
     const DISCRIMINATION: chain_addr::Discrimination = chain_addr::Discrimination::Test;
 
-    let sk: SecretKey<Ed25519> = SecretKey::generate(&mut rng);
-    let pk: PublicKey<Ed25519> = sk.to_public();
+    let sk1: SecretKey<Ed25519> = SecretKey::generate(&mut rng);
+    let pk1: PublicKey<Ed25519> = sk1.to_public();
+
+    let sk2: SecretKey<Ed25519> = SecretKey::generate(&mut rng);
+    let pk2: PublicKey<Ed25519> = sk2.to_public();
+
     let leader_1: KeyPair<Ed25519> = KeyPair::generate(&mut rng);
     let leader_2: KeyPair<Ed25519> = KeyPair::generate(&mut rng);
 
-    let initial_funds_address = chain_addr::Address(DISCRIMINATION, chain_addr::Kind::Single(pk));
-    let initial_funds_address = crate::interfaces::Address::from(initial_funds_address);
+    let initial_funds_address_1 =
+        chain_addr::Address(DISCRIMINATION, chain_addr::Kind::Account(pk1));
+    let initial_funds_address_1 = crate::interfaces::Address::from(initial_funds_address_1);
+
+    let initial_funds_address_2 =
+        chain_addr::Address(DISCRIMINATION, chain_addr::Kind::Account(pk2));
+    let initial_funds_address_2 = crate::interfaces::Address::from(initial_funds_address_2);
+
     let leader_1_pk = leader_1.public_key().to_bech32_str();
     let leader_2_pk = leader_2.public_key().to_bech32_str();
 
     format!(
-        include_str!("DOCUMENTED_EXAMPLE.yaml"),
+        include_str!("BLOCKCHAIN_CONFIGURATION_DOCUMENTED_EXAMPLE.yaml"),
         discrimination = DISCRIMINATION,
         default_block0_date = crate::time::SecondsSinceUnixEpoch::default(),
         default_slots_per_epoch = NumberOfSlotsPerEpoch::default(),
@@ -129,9 +150,11 @@ pub fn block0_configuration_documented_example() -> String {
         default_kes_update_speed = KesUpdateSpeed::default(),
         default_block_content_max_size = BlockContentMaxSize::default(),
         default_epoch_stability_depth = EpochStabilityDepth::default(),
+        default_proposal_expiration = ProposalExpiration::default(),
         leader_1 = leader_1_pk,
         leader_2 = leader_2_pk,
-        initial_funds_address = initial_funds_address
+        initial_funds_address_1 = initial_funds_address_1,
+        initial_funds_address_2 = initial_funds_address_2,
     )
 }
 
@@ -139,6 +162,7 @@ pub fn block0_configuration_documented_example() -> String {
 mod test {
     use super::*;
     use crate::interfaces::ARBITRARY_MAX_NUMBER_INITIAL_FRAGMENTS;
+    use chain_core::packer::Codec;
     use quickcheck::{Arbitrary, Gen, TestResult};
 
     impl Arbitrary for Block0Configuration {
@@ -184,7 +208,7 @@ mod test {
 
             let bytes = block.serialize_as_vec().unwrap();
             let reader = std::io::Cursor::new(&bytes);
-            let decoded = Block::deserialize(reader).unwrap();
+            let decoded = Block::deserialize(&mut Codec::new(reader)).unwrap();
 
             let block0_configuration_dec = Block0Configuration::from_block(&decoded).unwrap();
 
