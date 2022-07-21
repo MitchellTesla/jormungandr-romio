@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add /v1/account-votes-all endpoint to return the list of proposals a user has voted for
+- Remove /v1/account-votes-count endpoint
 - Validate server id is the expected one during gRPC handshake
 - fix incorrect keys bech32 HRP by always using the ones provided by the library
 - update REST API: add new endpoint AccountVotes (`/api/v1/votes/plan/account-votes/{account_id}`)
@@ -41,6 +43,7 @@
 - Update gas price and block gas limit for EVM params
 - Add new 'evm' REST API endpoints 'address_mapping/jormungandr_address', 'address_mapping/evm_address` for getting info about address mapping. They are optional for the 'evm' feature.
 - Add jcli command to merge the results of multiple voteplans with the same proposals.
+- Bump rpassword to 6.0.1
 
 ## Release 0.13.0
 

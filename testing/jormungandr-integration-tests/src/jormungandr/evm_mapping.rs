@@ -5,11 +5,13 @@ use jormungandr_automation::jormungandr::ConfigurationBuilder;
 #[test]
 pub fn test_evm_mapping() {
     let mut alice = thor::Wallet::default();
-    let bob = thor::Wallet::default();
 
-    let (jormungandr, _stake_pools) =
-        startup::start_stake_pool(&[alice.clone()], &[bob], &mut ConfigurationBuilder::new())
-            .unwrap();
+    let (jormungandr, _stake_pools) = startup::start_stake_pool(
+        &[alice.clone()],
+        &[alice.clone()],
+        &mut ConfigurationBuilder::new(),
+    )
+    .unwrap();
 
     let transaction_sender = thor::FragmentSender::from(jormungandr.block0_configuration());
 
@@ -22,7 +24,7 @@ pub fn test_evm_mapping() {
     let evm_mapping = TestGen::evm_mapping_for_wallet(&alice.clone().into());
 
     assert_eq!(
-        "",
+        "null",
         jormungandr
             .rest()
             .raw()
@@ -81,7 +83,7 @@ pub fn test_evm_mapping_twice() {
     let evm_mapping_alice = TestGen::evm_mapping_for_wallet(&alice.clone().into());
 
     assert_eq!(
-        "",
+        "null",
         jormungandr
             .rest()
             .raw()
@@ -119,7 +121,7 @@ pub fn test_evm_mapping_twice() {
     let evm_mapping_bob = TestGen::evm_mapping_for_wallet(&bob.clone().into());
 
     assert_eq!(
-        "",
+        "null",
         jormungandr
             .rest()
             .raw()
@@ -158,11 +160,13 @@ pub fn test_evm_mapping_twice() {
 #[test]
 pub fn test_evm_mapping_already_mapped() {
     let mut alice = thor::Wallet::default();
-    let bob = thor::Wallet::default();
 
-    let (jormungandr, _stake_pools) =
-        startup::start_stake_pool(&[alice.clone()], &[bob], &mut ConfigurationBuilder::new())
-            .unwrap();
+    let (jormungandr, _stake_pools) = startup::start_stake_pool(
+        &[alice.clone()],
+        &[alice.clone()],
+        &mut ConfigurationBuilder::new(),
+    )
+    .unwrap();
 
     let transaction_sender = thor::FragmentSender::from(jormungandr.block0_configuration());
 
@@ -175,7 +179,7 @@ pub fn test_evm_mapping_already_mapped() {
     let evm_mapping = TestGen::evm_mapping_for_wallet(&alice.clone().into());
 
     assert_eq!(
-        "",
+        "null",
         jormungandr
             .rest()
             .raw()
